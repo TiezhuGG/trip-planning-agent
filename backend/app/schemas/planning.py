@@ -197,6 +197,20 @@ class MapRenderConfig(BaseModel):
     center: GeoPoint | None = None
 
 
+class IntegrationStatus(BaseModel):
+    mcp_enabled: bool = False
+    mcp_connected: bool = False
+    mcp_command: str = ""
+    available_tools: list[str] = Field(default_factory=list)
+    resolved_tools: dict[str, str] = Field(default_factory=dict)
+    missing_tools: list[str] = Field(default_factory=list)
+    map_rendering_enabled: bool = False
+    map_js_key_configured: bool = False
+    security_js_code_configured: bool = False
+    mock_enabled: bool = True
+    warnings: list[str] = Field(default_factory=list)
+
+
 class PlanningResponse(BaseModel):
     status: Literal["success"] = "success"
     generated_at: datetime
@@ -207,4 +221,5 @@ class PlanningResponse(BaseModel):
     tool_trace: list[ToolCallRecord] = Field(default_factory=list)
     meta: PlanGenerationMeta = Field(default_factory=PlanGenerationMeta)
     map_config: MapRenderConfig = Field(default_factory=MapRenderConfig)
+    integration_status: IntegrationStatus = Field(default_factory=IntegrationStatus)
     plan: TravelPlan

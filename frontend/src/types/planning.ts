@@ -194,6 +194,20 @@ export interface MapRenderConfig {
   center: GeoPoint | null
 }
 
+export interface IntegrationStatus {
+  mcp_enabled: boolean
+  mcp_connected: boolean
+  mcp_command: string
+  available_tools: string[]
+  resolved_tools: Record<string, string>
+  missing_tools: string[]
+  map_rendering_enabled: boolean
+  map_js_key_configured: boolean
+  security_js_code_configured: boolean
+  mock_enabled: boolean
+  warnings: string[]
+}
+
 export interface PlanningResponse {
   status: 'success'
   generated_at: string
@@ -204,5 +218,6 @@ export interface PlanningResponse {
   tool_trace: ToolCallRecord[]
   meta: PlanGenerationMeta
   map_config: MapRenderConfig
+  integration_status: IntegrationStatus
   plan: TravelPlan
 }

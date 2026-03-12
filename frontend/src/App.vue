@@ -317,6 +317,46 @@ function routeModeLabel(mode: string) {
           </div>
         </article>
 
+        <article class="rounded-[32px] bg-white/90 p-6 shadow-card">
+          <div class="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <div class="text-xs uppercase tracking-[0.32em] text-iris/70">Integration Status</div>
+              <h2 class="mt-3 text-2xl font-semibold text-ink">?? MCP ???????</h2>
+            </div>
+            <div class="flex flex-wrap gap-2 text-xs">
+              <span class="rounded-full px-3 py-1" :class="result.integration_status.mcp_connected ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'">{{ result.integration_status.mcp_connected ? 'MCP ???' : 'MCP ???' }}</span>
+              <span class="rounded-full px-3 py-1" :class="result.integration_status.map_js_key_configured ? 'bg-sky-100 text-sky-700' : 'bg-slate-100 text-slate-700'">{{ result.integration_status.map_js_key_configured ? 'JS Key ???' : 'JS Key ???' }}</span>
+              <span class="rounded-full px-3 py-1" :class="result.integration_status.mock_enabled ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'">{{ result.integration_status.mock_enabled ? 'Mock ???' : 'Mock ???' }}</span>
+            </div>
+          </div>
+          <div class="mt-5 grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
+            <div class="rounded-[24px] border border-slate-100 bg-panel px-4 py-4 text-sm text-slate-600">
+              <div class="font-medium text-ink">MCP ????</div>
+              <div class="mt-2 break-all rounded-[18px] bg-white px-3 py-2 text-xs shadow-sm">{{ result.integration_status.mcp_command || '???' }}</div>
+              <div class="mt-4 font-medium text-ink">????????</div>
+              <div class="mt-3 flex flex-wrap gap-2">
+                <span v-for="tool in result.integration_status.available_tools" :key="tool" class="rounded-full bg-white px-3 py-1 text-xs shadow-sm">{{ tool }}</span>
+              </div>
+            </div>
+            <div class="space-y-4">
+              <div class="rounded-[24px] border border-slate-100 bg-panel px-4 py-4 text-sm text-slate-600">
+                <div class="font-medium text-ink">??????</div>
+                <div class="mt-3 grid gap-2 md:grid-cols-3">
+                  <div class="rounded-[18px] bg-white px-3 py-3 shadow-sm"><div class="text-xs text-slate-500">POI</div><div class="mt-1 break-all text-ink">{{ result.integration_status.resolved_tools.poi_search || '???' }}</div></div>
+                  <div class="rounded-[18px] bg-white px-3 py-3 shadow-sm"><div class="text-xs text-slate-500">Route</div><div class="mt-1 break-all text-ink">{{ result.integration_status.resolved_tools.route_plan || '???' }}</div></div>
+                  <div class="rounded-[18px] bg-white px-3 py-3 shadow-sm"><div class="text-xs text-slate-500">Weather</div><div class="mt-1 break-all text-ink">{{ result.integration_status.resolved_tools.weather || '???' }}</div></div>
+                </div>
+              </div>
+              <div v-if="result.integration_status.warnings.length || result.meta.warnings.length" class="rounded-[24px] border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-800">
+                <div class="font-medium">????</div>
+                <div class="mt-3 space-y-2">
+                  <div v-for="warning in [...result.integration_status.warnings, ...result.meta.warnings]" :key="warning">{{ warning }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </article>
+
         <section class="grid gap-6 xl:grid-cols-[1fr_340px]">
           <article class="rounded-[32px] bg-white/90 p-6 shadow-card">
             <div class="text-xs uppercase tracking-[0.32em] text-iris/70">Initial Draft</div>

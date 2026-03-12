@@ -48,7 +48,7 @@ class MCPStdioClient:
             {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {},
-                "clientInfo": {"name": "smart-travel-planner", "version": "0.1.0"},
+                "clientInfo": {"name": "trip-planning-agent", "version": "0.1.0"},
             },
         )
         await self._notify("notifications/initialized", {})
@@ -165,3 +165,4 @@ class MCPStdioClient:
                     return
         except asyncio.CancelledError:
             raise
+

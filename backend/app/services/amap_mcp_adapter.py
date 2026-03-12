@@ -7,6 +7,7 @@ from app.config import Settings
 from app.schemas.planning import (
     DailyForecast,
     GeoPoint,
+    IntegrationStatus,
     POIRecommendation,
     PlanningContext,
     RouteStep,
@@ -32,6 +33,8 @@ class AmapMCPAdapter:
             if settings.has_mcp
             else None
         )
+        self._tool_catalog: list[dict[str, Any]] | None = None
+        self._resolved_tools: dict[str, str] = {}
 
     @property
     def has_client(self) -> bool:
@@ -41,6 +44,54 @@ class AmapMCPAdapter:
         self, request: TripPlanningRequest
     ) -> tuple[PlanningContext, list[ToolCallRecord]]:
         return self._mock_context(request)
+
+    async def diagnose(self) -> IntegrationStatus:
+        warnings: list[str] = []
+        available_tools: list[str] = []
+        resolved_tools: dict[str, str] = {}
+        missing_tools: list[str] = []
+        mcp_connected = False
+
+        if self.client is not None:
+            try:
+                catalog = await self._ensure_tool_catalog(force_refresh=True)
+                available_tools = [item.get("name", "") for item in catalog if item.get("name")]
+                mcp_connected = True
+                resolved_tools = {
+                    purpose: self._resolve_tool_name(purpose, strict=False) or ""
+                    for purpose in ("poi_search", "route_plan", "weather")
+                }
+                resolved_tools = {key: value for key, value in resolved_tools.items() if value}
+                missing_tools = [
+                    purpose
+                    for purpose in ("poi_search", "route_plan", "weather")
+                    if purpose not in resolved_tools
+                ]
+                if missing_tools:
+                    warnings.append(
+                        f"MCP 已连接，但仍缺少工具映射: {', '.join(missing_tools)}。"
+                    )
+            except Exception as exc:
+                warnings.append(f"MCP 连接失败: {exc}")
+        elif not self.settings.enable_mock_mcp:
+            warnings.append("未配置 MCP 启动命令，且已关闭 Mock。规划请求会直接失败。")
+
+        if self.settings.amap_api_key and not self.settings.amap_security_js_code:
+            warnings.append("已配置高德 JS Key，但未配置安全密钥；如果控制台开启了安全校验，前端地图会加载失败。")
+
+        return IntegrationStatus(
+            mcp_enabled=self.settings.has_mcp,
+            mcp_connected=mcp_connected,
+            mcp_command=self.settings.amap_mcp_command,
+            available_tools=available_tools,
+            resolved_tools=resolved_tools,
+            missing_tools=missing_tools,
+            map_rendering_enabled=self.settings.has_map_rendering,
+            map_js_key_configured=bool(self.settings.amap_api_key),
+            security_js_code_configured=bool(self.settings.amap_security_js_code),
+            mock_enabled=self.settings.enable_mock_mcp,
+            warnings=warnings,
+        )
 
     async def collect_context(
         self, request: TripPlanningRequest
@@ -77,8 +128,8 @@ class AmapMCPAdapter:
         queries.extend(f"{request.destination} {keyword}" for keyword in request.must_visit[:4])
         pois: list[POIRecommendation] = []
         for query in queries:
-            raw = await self._call_tool(
-                self.settings.amap_mcp_tool_poi_search,
+            raw = await self._call_tool_for_purpose(
+                "poi_search",
                 {
                     "city": request.destination,
                     "query": query,
@@ -93,8 +144,8 @@ class AmapMCPAdapter:
         self, request: TripPlanningRequest, trace: list[ToolCallRecord]
     ) -> list[POIRecommendation]:
         preference = request.dining_preferences[0] if request.dining_preferences else "特色餐厅"
-        raw = await self._call_tool(
-            self.settings.amap_mcp_tool_poi_search,
+        raw = await self._call_tool_for_purpose(
+            "poi_search",
             {
                 "city": request.destination,
                 "query": f"{request.destination} {preference}",
@@ -107,8 +158,8 @@ class AmapMCPAdapter:
     async def fetch_hotels(
         self, request: TripPlanningRequest, trace: list[ToolCallRecord]
     ) -> list[POIRecommendation]:
-        raw = await self._call_tool(
-            self.settings.amap_mcp_tool_poi_search,
+        raw = await self._call_tool_for_purpose(
+            "poi_search",
             {
                 "city": request.destination,
                 "query": f"{request.destination} {request.hotel_style}",
@@ -121,8 +172,8 @@ class AmapMCPAdapter:
     async def fetch_weather(
         self, request: TripPlanningRequest, trace: list[ToolCallRecord]
     ) -> WeatherSummary:
-        raw = await self._call_tool(
-            self.settings.amap_mcp_tool_weather,
+        raw = await self._call_tool_for_purpose(
+            "weather",
             {
                 "city": request.destination,
                 "date": str(request.start_date),
@@ -144,8 +195,8 @@ class AmapMCPAdapter:
         if self.client is None:
             return self._mock_route(day_number, origin, destination, waypoints, mode)
 
-        raw = await self._call_tool(
-            self.settings.amap_mcp_tool_route_plan,
+        raw = await self._call_tool_for_purpose(
+            "route_plan",
             {
                 "origin": self._route_endpoint(origin),
                 "destination": self._route_endpoint(destination),
@@ -156,13 +207,20 @@ class AmapMCPAdapter:
         )
         return self._normalize_route(raw, day_number, origin, destination, waypoints, mode)
 
-    async def _call_tool(
+    async def _call_tool_for_purpose(
         self,
-        tool_name: str,
+        purpose: str,
         arguments: dict[str, Any],
         trace: list[ToolCallRecord],
     ) -> Any:
         assert self.client is not None
+        await self._ensure_tool_catalog()
+        tool_name = self._resolve_tool_name(purpose)
+        if not tool_name:
+            available = [item.get("name", "") for item in (self._tool_catalog or []) if item.get("name")]
+            raise MCPProtocolError(
+                f"?????? {purpose} ?????????: {', '.join(available) if available else '?'}"
+            )
         try:
             result = await self.client.call_tool(tool_name, arguments)
             normalized = self._unwrap_tool_result(result)
@@ -171,7 +229,7 @@ class AmapMCPAdapter:
                     tool_name=tool_name,
                     arguments=arguments,
                     success=True,
-                    summary="工具调用成功",
+                    summary=f"工具调用成功 ({purpose})",
                 )
             )
             return normalized
@@ -181,7 +239,7 @@ class AmapMCPAdapter:
                     tool_name=tool_name,
                     arguments=arguments,
                     success=False,
-                    summary=f"工具调用失败: {exc}",
+                    summary=f"工具调用失败 ({purpose}): {exc}",
                 )
             )
             raise
@@ -191,10 +249,69 @@ class AmapMCPAdapter:
                     tool_name=tool_name,
                     arguments=arguments,
                     success=False,
-                    summary=f"工具调用异常: {exc}",
+                    summary=f"工具调用异常 ({purpose}): {exc}",
                 )
             )
             raise
+
+    async def _ensure_tool_catalog(self, force_refresh: bool = False) -> list[dict[str, Any]]:
+        if self.client is None:
+            return []
+        if self._tool_catalog is not None and not force_refresh:
+            return self._tool_catalog
+
+        result = await self.client.list_tools()
+        tools = result.get("tools", []) if isinstance(result, dict) else []
+        if not isinstance(tools, list):
+            tools = []
+        self._tool_catalog = [item for item in tools if isinstance(item, dict)]
+        return self._tool_catalog
+
+    def _resolve_tool_name(self, purpose: str, strict: bool = True) -> str | None:
+        if purpose in self._resolved_tools:
+            return self._resolved_tools[purpose]
+
+        configured_name = {
+            "poi_search": self.settings.amap_mcp_tool_poi_search,
+            "route_plan": self.settings.amap_mcp_tool_route_plan,
+            "weather": self.settings.amap_mcp_tool_weather,
+        }[purpose]
+        catalog = self._tool_catalog or []
+        available = [item.get("name", "") for item in catalog if item.get("name")]
+
+        if configured_name and configured_name in available:
+            self._resolved_tools[purpose] = configured_name
+            return configured_name
+
+        best_name = ""
+        best_score = -1
+        keywords = self._purpose_keywords(purpose)
+        for item in catalog:
+            name = str(item.get("name", ""))
+            description = str(item.get("description", ""))
+            text = f"{name} {description}".lower()
+            score = 0
+            for keyword in keywords:
+                if keyword in text:
+                    score += 1
+            if score > best_score:
+                best_score = score
+                best_name = name
+
+        if best_name and best_score > 0:
+            self._resolved_tools[purpose] = best_name
+            return best_name
+
+        if configured_name:
+            return configured_name if not strict else None
+        return None
+
+    def _purpose_keywords(self, purpose: str) -> list[str]:
+        return {
+            "poi_search": ["poi", "place", "search", "around", "keyword"],
+            "route_plan": ["route", "direction", "distance", "path", "navigation"],
+            "weather": ["weather", "forecast", "climate"],
+        }[purpose]
 
     def _unwrap_tool_result(self, result: Any) -> Any:
         if isinstance(result, dict) and "content" in result:

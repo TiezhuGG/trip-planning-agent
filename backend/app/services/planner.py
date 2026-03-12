@@ -2,7 +2,7 @@
 
 from app.agents.planning_agent import PlanningCoordinatorAgent
 from app.config import Settings
-from app.schemas.planning import PlanningResponse, TripPlanningRequest
+from app.schemas.planning import IntegrationStatus, PlanningResponse, TripPlanningRequest
 
 
 class TravelPlannerService:
@@ -16,3 +16,6 @@ class TravelPlannerService:
         generated_at: datetime,
     ) -> PlanningResponse:
         return await self.coordinator.generate(request, generated_at)
+
+    async def diagnose_integrations(self) -> IntegrationStatus:
+        return await self.coordinator.diagnose()

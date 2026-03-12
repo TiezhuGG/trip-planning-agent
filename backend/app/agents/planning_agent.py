@@ -11,7 +11,7 @@ from app.config import Settings
 from app.schemas.planning import (
     AgentExecution,
     GeoPoint,
-    InitialPlanDraft,
+    IntegrationStatus,
     MapRenderConfig,
     PlanGenerationMeta,
     PlanningContext,
@@ -35,11 +35,16 @@ class PlanningCoordinatorAgent:
         self.route_agent = RoutePlanningAgent(self.adapter)
         self.composer_agent = ItineraryComposerAgent(self.ai_client)
 
+    async def diagnose(self) -> IntegrationStatus:
+        return await self.adapter.diagnose()
+
     async def generate(
         self, request: TripPlanningRequest, generated_at: datetime
     ) -> PlanningResponse:
         agent_trace: list[AgentExecution] = []
         warnings: list[str] = []
+        integration_status = await self.adapter.diagnose()
+        warnings.extend(integration_status.warnings)
 
         initial_plan, seed_trace = await self.seed_agent.gather(request)
         agent_trace.append(seed_trace)
@@ -92,21 +97,21 @@ class PlanningCoordinatorAgent:
                         success=True,
                         summary=f"已获取 {len(context.attractions)} 个景点和 {len(context.restaurants)} 个餐饮候选。",
                         used_llm=False,
-                        used_tools=[self.adapter.settings.amap_mcp_tool_poi_search],
+                        used_tools=[integration_status.resolved_tools.get("poi_search", self.adapter.settings.amap_mcp_tool_poi_search)],
                     ),
                     AgentExecution(
                         agent_name="hotel_agent",
                         success=True,
                         summary=f"已获取 {len(context.hotels)} 个酒店候选。",
                         used_llm=False,
-                        used_tools=[self.adapter.settings.amap_mcp_tool_poi_search],
+                        used_tools=[integration_status.resolved_tools.get("poi_search", self.adapter.settings.amap_mcp_tool_poi_search)],
                     ),
                     AgentExecution(
                         agent_name="weather_agent",
                         success=True,
                         summary=f"已获取 {len(context.weather.daily_forecasts)} 天天气信息。",
                         used_llm=False,
-                        used_tools=[self.adapter.settings.amap_mcp_tool_weather],
+                        used_tools=[integration_status.resolved_tools.get("weather", self.adapter.settings.amap_mcp_tool_weather)],
                     ),
                 ]
             )
@@ -165,6 +170,7 @@ class PlanningCoordinatorAgent:
                 security_js_code=self.settings.amap_security_js_code or None,
                 center=self._resolve_center(context),
             ),
+            integration_status=integration_status,
             plan=plan,
         )
 
@@ -174,4 +180,3 @@ class PlanningCoordinatorAgent:
                 continue
             return GeoPoint(longitude=poi.longitude, latitude=poi.latitude)
         return None
-
