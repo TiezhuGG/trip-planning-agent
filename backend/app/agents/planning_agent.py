@@ -128,7 +128,7 @@ class PlanningCoordinatorAgent:
                 )
 
             try:
-                hotels = await self.hotel_agent.gather(request, tool_trace)
+                hotels = await self.hotel_agent.gather(request, context.attractions, tool_trace)
                 context.hotels = hotels[:8]
                 agent_trace.append(
                     AgentExecution(
@@ -241,3 +241,4 @@ class PlanningCoordinatorAgent:
                 continue
             return GeoPoint(longitude=poi.longitude, latitude=poi.latitude)
         return None
+

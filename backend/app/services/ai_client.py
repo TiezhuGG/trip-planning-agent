@@ -291,22 +291,119 @@ class TravelAIClient:
                 }
             ],
         }
+        user_payload = self._build_compose_user_payload(
+            request=request,
+            initial_plan=initial_plan,
+            context=context,
+            tool_trace=tool_trace,
+        )
         payload = await self._request_json_payload(
             system_prompt=(
                 "You are a senior trip planner. "
                 "Use the provided draft, map data, weather, and routes to produce the final plan. "
                 "Return JSON only and keep user-facing text natural Chinese."
             ),
-            user_payload={
-                "request": request.model_dump(mode="json"),
-                "initial_plan": initial_plan.model_dump(mode="json"),
-                "planning_context": context.model_dump(mode="json"),
-                "tool_trace": [item.model_dump(mode="json") for item in tool_trace],
-                "response_schema_hint": schema_hint,
-            },
+            user_payload={**user_payload, "response_schema_hint": schema_hint},
             temperature=0.7,
         )
         return TravelPlan.model_validate(payload)
+
+    def _build_compose_user_payload(
+        self,
+        request: TripPlanningRequest,
+        initial_plan: InitialPlanDraft,
+        context: PlanningContext,
+        tool_trace: list[ToolCallRecord],
+    ) -> dict[str, Any]:
+        for detail_level in ("full", "compact", "minimal"):
+            payload = {
+                "request": request.model_dump(mode="json"),
+                "initial_plan": initial_plan.model_dump(mode="json"),
+                "planning_context": self._serialize_context_for_llm(context, detail_level),
+                "tool_trace": self._serialize_tool_trace_for_llm(tool_trace, detail_level),
+            }
+            if len(json.dumps(payload, ensure_ascii=True)) <= 180000:
+                return payload
+
+        return {
+            "request": request.model_dump(mode="json"),
+            "initial_plan": initial_plan.model_dump(mode="json"),
+            "planning_context": self._serialize_context_for_llm(context, "minimal"),
+            "tool_trace": self._serialize_tool_trace_for_llm(tool_trace, "minimal"),
+        }
+
+    def _serialize_context_for_llm(self, context: PlanningContext, detail_level: str) -> dict[str, Any]:
+        poi_limit = {"full": 8, "compact": 5, "minimal": 3}[detail_level]
+        route_limit = {"full": 6, "compact": 4, "minimal": 2}[detail_level]
+        step_limit = {"full": 4, "compact": 2, "minimal": 1}[detail_level]
+        return {
+            "destination": context.destination,
+            "attractions": [self._serialize_poi_for_llm(item) for item in context.attractions[:poi_limit]],
+            "restaurants": [self._serialize_poi_for_llm(item) for item in context.restaurants[:poi_limit]],
+            "hotels": [self._serialize_poi_for_llm(item) for item in context.hotels[:poi_limit]],
+            "routes": [
+                self._serialize_route_for_llm(item, step_limit=step_limit)
+                for item in context.routes[:route_limit]
+            ],
+            "weather": {
+                "overview": context.weather.overview,
+                "temperature_range": context.weather.temperature_range,
+                "suggestions": context.weather.suggestions[:3],
+                "daily_forecasts": [
+                    item.model_dump(mode="json")
+                    for item in context.weather.daily_forecasts[: max(2, route_limit)]
+                ],
+            },
+        }
+
+    def _serialize_tool_trace_for_llm(
+        self,
+        tool_trace: list[ToolCallRecord],
+        detail_level: str,
+    ) -> list[dict[str, Any]]:
+        limit = {"full": 12, "compact": 8, "minimal": 4}[detail_level]
+        serialized: list[dict[str, Any]] = []
+        for item in tool_trace[:limit]:
+            serialized.append(
+                {
+                    "tool_name": item.tool_name,
+                    "success": item.success,
+                    "summary": item.summary[:180],
+                    "arguments": self._compact_tool_arguments(item.arguments),
+                }
+            )
+        return serialized
+
+    def _serialize_poi_for_llm(self, poi: Any) -> dict[str, Any]:
+        return {
+            "name": getattr(poi, "name", ""),
+            "address": getattr(poi, "address", ""),
+            "district": getattr(poi, "district", None),
+            "tags": list(getattr(poi, "tags", [])[:3]),
+            "opening_hours": getattr(poi, "opening_hours", None),
+            "rating": getattr(poi, "rating", None),
+        }
+
+    def _serialize_route_for_llm(self, route: RouteSummary, step_limit: int) -> dict[str, Any]:
+        return {
+            "day_number": route.day_number,
+            "title": route.title,
+            "from_name": route.from_name,
+            "to_name": route.to_name,
+            "waypoints": route.waypoints[:4],
+            "distance_text": route.distance_text,
+            "duration_text": route.duration_text,
+            "mode": route.mode,
+            "steps": [step.model_dump(mode="json") for step in route.steps[:step_limit]],
+        }
+
+    def _compact_tool_arguments(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        compact: dict[str, Any] = {}
+        for key in ("keywords", "city", "origin", "destination", "origin_address", "destination_address", "mode"):
+            value = arguments.get(key)
+            if value not in (None, "", []):
+                compact[key] = value
+        return compact
 
     async def _request_json_payload(
         self,

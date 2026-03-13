@@ -1,4 +1,4 @@
-from app.schemas.planning import POIRecommendation, TripPlanningRequest
+﻿from app.schemas.planning import POIRecommendation, TripPlanningRequest
 from app.services.amap_mcp_adapter import AmapMCPAdapter
 
 
@@ -7,6 +7,9 @@ class HotelRecommendationAgent:
         self.adapter = adapter
 
     async def gather(
-        self, request: TripPlanningRequest, trace: list
+        self,
+        request: TripPlanningRequest,
+        attractions: list[POIRecommendation],
+        trace: list,
     ) -> list[POIRecommendation]:
-        return await self.adapter.fetch_hotels(request, trace)
+        return await self.adapter.fetch_hotels(request, trace, anchor_pois=attractions)

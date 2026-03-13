@@ -4,7 +4,7 @@
 
 :root {
   color: #1f2a44;
-  background: #e9eef9;
+  background: #edf2f5;
   font-family: "HarmonyOS Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -24,9 +24,10 @@ body {
   margin: 0;
   min-width: 320px;
   background:
-    radial-gradient(circle at top left, rgba(107, 124, 255, 0.12), transparent 20%),
-    radial-gradient(circle at top right, rgba(138, 77, 203, 0.12), transparent 24%),
-    linear-gradient(180deg, #eef2fb 0%, #e8eef9 42%, #edf2fb 100%);
+    radial-gradient(circle at 12% 12%, rgba(42, 101, 140, 0.16), transparent 24%),
+    radial-gradient(circle at 88% 0%, rgba(198, 151, 92, 0.16), transparent 24%),
+    radial-gradient(circle at 50% 100%, rgba(22, 48, 71, 0.08), transparent 28%),
+    linear-gradient(180deg, #f6f2e9 0%, #eef3f6 34%, #e7edf2 100%);
 }
 
 #app {
@@ -54,7 +55,7 @@ pre {
 }
 
 ::selection {
-  background: rgba(109, 97, 227, 0.2);
+  background: rgba(42, 101, 140, 0.18);
 }
 
 ::-webkit-scrollbar {
@@ -65,7 +66,7 @@ pre {
 ::-webkit-scrollbar-thumb {
   border: 2px solid transparent;
   border-radius: 999px;
-  background: linear-gradient(180deg, rgba(96, 114, 242, 0.8), rgba(122, 79, 188, 0.8));
+  background: linear-gradient(180deg, rgba(47, 121, 168, 0.82), rgba(183, 140, 83, 0.82));
   background-clip: padding-box;
 }
 

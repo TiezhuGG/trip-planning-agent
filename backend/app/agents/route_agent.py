@@ -1,4 +1,4 @@
-import math
+﻿import math
 
 from app.schemas.planning import (
     AgentExecution,
@@ -62,17 +62,18 @@ class RoutePlanningAgent:
                     for item in trace[trace_start:]
                     if item.tool_name.startswith("maps_direction")
                     or item.tool_name.startswith("maps_bicycling")
-                    or item.tool_name.startswith("amap_webservice_transit")
+                    or item.tool_name.startswith("amap_webservice_")
+                    or item.tool_name == "route_fallback_summary"
                 }
                 used_tools.update(day_tools)
-                if route.mode != preferred_mode:
+                if route.mode != preferred_mode or "route_fallback_summary" in day_tools:
                     fallback_days += 1
             except Exception as exc:
                 warnings.append(f"第 {day.day_number} 天路线规划失败: {exc}")
 
         summary = f"已生成 {len(routes)} 条每日路线。" if routes else "暂无可用的每日路线结果。"
         if fallback_days:
-            summary = f"{summary} 其中 {fallback_days} 天已自动降级到可用路线模式。"
+            summary = f"{summary} 其中 {fallback_days} 天已自动降级为概览路线。"
 
         return (
             routes,
@@ -168,7 +169,6 @@ class RoutePlanningAgent:
         return sum(distances) / len(distances)
 
     def _distance_km(self, lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-        # Equirectangular approximation is sufficient for same-city ranking.
         lat_scale = 111.0
         lon_scale = 111.0 * max(0.1, math.cos(math.radians((lat1 + lat2) / 2)))
         lat_distance = (lat1 - lat2) * lat_scale

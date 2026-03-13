@@ -163,18 +163,21 @@ class AmapMCPAdapter:
         return await self._enrich_pois_with_details(merged, trace)
 
     async def fetch_hotels(
-        self, request: TripPlanningRequest, trace: list[ToolCallRecord]
+        self,
+        request: TripPlanningRequest,
+        trace: list[ToolCallRecord],
+        anchor_pois: list[POIRecommendation] | None = None,
     ) -> list[POIRecommendation]:
-        queries = [request.hotel_style, "酒店", "舒适型酒店", "热门酒店"]
+        queries = self._build_hotel_queries(request, anchor_pois or [])
         merged = await self._search_poi_candidates(
             city=request.destination,
             queries=queries,
             trace=trace,
             fallback_kind="酒店",
-            target_count=6,
+            target_count=10,
         )
         enriched = await self._enrich_pois_with_details(merged, trace)
-        return self._sort_pois_by_city_center(request.destination, enriched)
+        return self._sort_hotels_for_stay(enriched, anchor_pois or [], request.destination)
 
     async def fetch_weather(
         self, request: TripPlanningRequest, trace: list[ToolCallRecord]
@@ -202,28 +205,40 @@ class AmapMCPAdapter:
         errors: list[str] = []
         for candidate_mode in self._route_mode_candidates(mode):
             attempted_modes.append(candidate_mode)
-            if candidate_mode == "transit":
+
+            if candidate_mode in {"transit", "driving", "walking"}:
                 try:
-                    raw = await self._plan_transit_via_web_service(origin, destination, trace)
+                    raw = await self._plan_route_via_web_service(candidate_mode, origin, destination, waypoints, trace)
                     return self._normalize_route(raw, day_number, origin, destination, waypoints, candidate_mode)
                 except Exception as exc:
                     errors.append(f"{candidate_mode}_webservice: {exc}")
 
-            tool_name = self._resolve_route_tool_name(candidate_mode)
-            try:
-                raw = await self._call_tool_for_purpose(
-                    "route_plan",
-                    self._build_route_arguments(origin, destination),
-                    trace,
-                    tool_name_override=tool_name,
-                )
-                return self._normalize_route(raw, day_number, origin, destination, waypoints, candidate_mode)
-            except Exception as exc:
-                errors.append(f"{candidate_mode}: {exc}")
+            for tool_name, arguments in self._build_route_tool_attempts(candidate_mode, origin, destination):
+                try:
+                    raw = await self._call_tool_for_purpose(
+                        "route_plan",
+                        arguments,
+                        trace,
+                        tool_name_override=tool_name,
+                    )
+                    return self._normalize_route(raw, day_number, origin, destination, waypoints, candidate_mode)
+                except Exception as exc:
+                    errors.append(f"{candidate_mode}/{tool_name}: {exc}")
 
-        raise MCPProtocolError(
-            f"路线规划失败，已尝试 {', '.join(attempted_modes)}；错误: {'；'.join(errors)}"
+        fallback_route = self._fallback_route(day_number, origin, destination, waypoints, mode)
+        trace.append(
+            ToolCallRecord(
+                tool_name="route_fallback_summary",
+                arguments={
+                    "origin": origin.name,
+                    "destination": destination.name,
+                    "mode": mode,
+                },
+                success=True,
+                summary=f"路线工具失败，已回退为概览路线：{'；'.join(errors[:3])}",
+            )
         )
+        return fallback_route
 
     async def _plan_transit_via_web_service(
         self,
@@ -283,6 +298,93 @@ class AmapMCPAdapter:
         )
         return normalized_payload
 
+    async def _plan_route_via_web_service(
+        self,
+        mode: str,
+        origin: POIRecommendation,
+        destination: POIRecommendation,
+        waypoints: list[POIRecommendation],
+        trace: list[ToolCallRecord],
+    ) -> dict[str, Any]:
+        if mode == "transit":
+            return await self._plan_transit_via_web_service(origin, destination, trace)
+
+        api_key = self._amap_web_service_key()
+        if not api_key:
+            raise MCPProtocolError("未配置高德 Web Service Key，无法走路线直连兜底。")
+
+        origin_location = await self._resolve_route_location(origin)
+        destination_location = await self._resolve_route_location(destination)
+        endpoint = {
+            "driving": "https://restapi.amap.com/v3/direction/driving",
+            "walking": "https://restapi.amap.com/v3/direction/walking",
+        }.get(mode)
+        if not endpoint:
+            raise MCPProtocolError(f"不支持的 Web Service 路线模式: {mode}")
+
+        arguments: dict[str, Any] = {
+            "origin": origin_location,
+            "destination": destination_location,
+        }
+        if mode == "driving":
+            waypoint_locations = [
+                location
+                for location in [await self._resolve_route_location(poi) for poi in waypoints[:3]]
+                if location and location not in {origin_location, destination_location}
+            ]
+            if waypoint_locations:
+                arguments["waypoints"] = "|".join(waypoint_locations)
+
+        async with httpx.AsyncClient(timeout=20, trust_env=False) as client:
+            response = await client.get(
+                endpoint,
+                params={
+                    "key": api_key,
+                    **arguments,
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+
+        if str(payload.get("status", "")) != "1":
+            raise MCPProtocolError(
+                f"高德 {mode} Web Service 返回错误: {payload.get('info') or payload.get('infocode') or payload}"
+            )
+
+        trace.append(
+            ToolCallRecord(
+                tool_name=f"amap_webservice_{mode}",
+                arguments=arguments,
+                success=True,
+                summary=f"工具调用成功 (route_plan) {self._summarize_tool_payload(payload)}",
+            )
+        )
+        return payload
+
+    def _build_route_tool_attempts(
+        self,
+        mode: str,
+        origin: POIRecommendation,
+        destination: POIRecommendation,
+    ) -> list[tuple[str, dict[str, Any]]]:
+        attempts: list[tuple[str, dict[str, Any]]] = []
+        coordinate_tool = self._resolve_route_tool_name(mode, coordinate=True)
+        if coordinate_tool and self._has_coordinates(origin) and self._has_coordinates(destination):
+            attempts.append((coordinate_tool, self._build_route_coordinate_arguments(origin, destination)))
+
+        address_tool = self._resolve_route_tool_name(mode, coordinate=False)
+        if address_tool:
+            attempts.append((address_tool, self._build_route_arguments(origin, destination)))
+
+        deduped: list[tuple[str, dict[str, Any]]] = []
+        seen: set[tuple[str, str]] = set()
+        for tool_name, arguments in attempts:
+            key = (tool_name, str(arguments))
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append((tool_name, arguments))
+        return deduped
     async def _resolve_route_location(self, poi: POIRecommendation) -> str:
         if poi.longitude is not None and poi.latitude is not None:
             return f"{poi.longitude},{poi.latitude}"
@@ -291,26 +393,26 @@ class AmapMCPAdapter:
         if not api_key:
             raise MCPProtocolError("缺少高德 Web Service Key，无法为路线规划补做 geocode。")
 
+        city = self._normalize_city_name(poi.district)
         async with httpx.AsyncClient(timeout=15, trust_env=False) as client:
-            response = await client.get(
-                "https://restapi.amap.com/v3/geocode/geo",
-                params={
-                    "key": api_key,
-                    "address": self._route_address(poi),
-                    "city": self._normalize_city_name(poi.district),
-                },
-            )
-            response.raise_for_status()
-            payload = response.json()
+            for candidate in self._route_address_candidates(poi):
+                response = await client.get(
+                    "https://restapi.amap.com/v3/geocode/geo",
+                    params={
+                        "key": api_key,
+                        "address": candidate,
+                        "city": city,
+                    },
+                )
+                response.raise_for_status()
+                payload = response.json()
+                if str(payload.get("status", "")) != "1":
+                    continue
+                geocodes = payload.get("geocodes")
+                if isinstance(geocodes, list) and geocodes and geocodes[0].get("location"):
+                    return str(geocodes[0]["location"])
 
-        if str(payload.get("status", "")) != "1":
-            raise MCPProtocolError(
-                f"高德 geocode 返回错误: {payload.get('info') or payload.get('infocode') or payload}"
-            )
-        geocodes = payload.get("geocodes")
-        if not isinstance(geocodes, list) or not geocodes or not geocodes[0].get("location"):
-            raise MCPProtocolError(f"未能为地址解析坐标: {self._route_address(poi)}")
-        return str(geocodes[0]["location"])
+        raise MCPProtocolError(f"未能为地址解析坐标: {self._route_address(poi)}")
 
     def _amap_web_service_key(self) -> str:
         return str(self.settings.amap_mcp_env.get("AMAP_MAPS_API_KEY", "")).strip()
@@ -483,16 +585,20 @@ class AmapMCPAdapter:
 
         return enriched
 
-    def _resolve_route_tool_name(self, mode: str) -> str | None:
+    def _resolve_route_tool_name(self, mode: str, coordinate: bool | None = None) -> str | None:
         catalog = self._tool_catalog or []
         available = [str(item.get("name", "")) for item in catalog if item.get("name")]
-        preferred = {
-            "driving": "maps_direction_driving_by_address",
-            "transit": "maps_direction_transit_integrated_by_address",
-            "walking": "maps_direction_walking_by_address",
-            "bicycling": "maps_bicycling_by_address",
-        }.get(mode, self.settings.amap_mcp_tool_route_plan)
-
+        preferred_map = {
+            ("driving", True): "maps_direction_driving_by_coordinates",
+            ("driving", False): "maps_direction_driving_by_address",
+            ("transit", True): "maps_direction_transit_integrated_by_coordinates",
+            ("transit", False): "maps_direction_transit_integrated_by_address",
+            ("walking", True): "maps_direction_walking_by_coordinates",
+            ("walking", False): "maps_direction_walking_by_address",
+            ("bicycling", True): "maps_bicycling_by_coordinates",
+            ("bicycling", False): "maps_bicycling_by_address",
+        }
+        preferred = preferred_map.get((mode, coordinate)) if coordinate is not None else preferred_map.get((mode, False), self.settings.amap_mcp_tool_route_plan)
         if preferred in available:
             return preferred
 
@@ -502,6 +608,7 @@ class AmapMCPAdapter:
             "walking": ["walking", "direction"],
             "bicycling": ["bicycling", "cycling", "direction"],
         }.get(mode, ["direction"])
+        location_keywords = ["coordinate", "coordinates"] if coordinate is True else ["address"] if coordinate is False else []
 
         best_name = ""
         best_score = -1
@@ -510,6 +617,8 @@ class AmapMCPAdapter:
             description = str(item.get("description", ""))
             text = f"{name} {description}".lower()
             score = sum(1 for keyword in fallback_keywords if keyword in text)
+            if location_keywords and not any(keyword in text for keyword in location_keywords):
+                score -= 1
             if score > best_score:
                 best_score = score
                 best_name = name
@@ -589,6 +698,19 @@ class AmapMCPAdapter:
             "origin_city": self._normalize_city_name(origin.district),
             "destination_city": self._normalize_city_name(destination.district),
         }
+
+    def _build_route_coordinate_arguments(
+        self,
+        origin: POIRecommendation,
+        destination: POIRecommendation,
+    ) -> dict[str, Any]:
+        return {
+            "origin": f"{origin.longitude},{origin.latitude}",
+            "destination": f"{destination.longitude},{destination.latitude}",
+        }
+
+    def _has_coordinates(self, poi: POIRecommendation) -> bool:
+        return poi.longitude is not None and poi.latitude is not None
 
     def _normalize_city_name(self, value: str | None) -> str:
         if not value:
@@ -1147,6 +1269,101 @@ class AmapMCPAdapter:
             return f"{poi.district}{poi.name}"
         return poi.name
 
+    def _build_hotel_queries(
+        self,
+        request: TripPlanningRequest,
+        anchor_pois: list[POIRecommendation],
+    ) -> list[str]:
+        queries: list[str] = []
+        for poi in anchor_pois[:4]:
+            if poi.name:
+                queries.append(f"{poi.name} 附近 {request.hotel_style}")
+                queries.append(f"{poi.name} 附近 酒店")
+            if poi.district:
+                queries.append(f"{poi.district} {request.hotel_style}")
+        queries.extend([request.hotel_style, f"{request.destination} {request.hotel_style}", "酒店", "舒适型酒店"])
+        return self._dedupe_queries(queries)
+
+    def _sort_hotels_for_stay(
+        self,
+        hotels: list[POIRecommendation],
+        anchor_pois: list[POIRecommendation],
+        city: str,
+    ) -> list[POIRecommendation]:
+        if anchor_pois:
+            center = self._anchor_center(anchor_pois)
+            return sorted(hotels, key=lambda poi: self._distance_score(poi, center))
+        return self._sort_pois_by_city_center(city, hotels)
+
+    def _anchor_center(self, pois: list[POIRecommendation]) -> GeoPoint:
+        coordinates = [(poi.longitude, poi.latitude) for poi in pois if poi.longitude is not None and poi.latitude is not None]
+        if not coordinates:
+            return self._city_center("")
+        longitude = sum(item[0] for item in coordinates) / len(coordinates)
+        latitude = sum(item[1] for item in coordinates) / len(coordinates)
+        return GeoPoint(longitude=longitude, latitude=latitude)
+
+    def _route_address_candidates(self, poi: POIRecommendation) -> list[str]:
+        candidates = [
+            " ".join(part for part in [poi.district or "", poi.address or "", poi.name] if part).strip(),
+            " ".join(part for part in [poi.district or "", poi.name] if part).strip(),
+            " ".join(part for part in [poi.district or "", poi.address or ""] if part).strip(),
+            poi.address.strip(),
+            poi.name.strip(),
+        ]
+        return [candidate for candidate in self._dedupe_queries(candidates) if candidate]
+
+    def _fallback_route(
+        self,
+        day_number: int,
+        origin: POIRecommendation,
+        destination: POIRecommendation,
+        waypoints: list[POIRecommendation],
+        mode: str,
+    ) -> RouteSummary:
+        polyline = self._fallback_polyline(origin, destination, waypoints)
+        total_km = self._polyline_distance_km(polyline) if len(polyline) > 1 else 8.0
+        speed_kmh = {
+            "walking": 4.5,
+            "bicycling": 12.0,
+            "transit": 20.0,
+            "driving": 28.0,
+        }.get(mode, 20.0)
+        duration_minutes = max(10, round(total_km / max(speed_kmh, 1.0) * 60))
+        step_target = waypoints[0].name if waypoints else destination.name
+        return RouteSummary(
+            day_number=day_number,
+            title=f"第 {day_number} 天路线",
+            from_name=origin.name,
+            to_name=destination.name,
+            waypoints=[item.name for item in waypoints],
+            distance_text=f"{total_km:.1f}公里",
+            duration_text=f"约 {duration_minutes} 分钟",
+            mode=mode,
+            steps=[
+                RouteStep(instruction=f"从 {origin.name} 出发，前往 {step_target}", distance_text="", duration_text=""),
+                RouteStep(instruction=f"随后继续前往 {destination.name}", distance_text="", duration_text=""),
+            ],
+            polyline=polyline,
+        )
+
+    def _polyline_distance_km(self, polyline: list[GeoPoint]) -> float:
+        if len(polyline) < 2:
+            return 0.0
+        distance = 0.0
+        for index in range(1, len(polyline)):
+            prev = polyline[index - 1]
+            curr = polyline[index]
+            distance += self._haversine_km(prev.latitude, prev.longitude, curr.latitude, curr.longitude)
+        return max(distance, 0.5)
+
+    def _haversine_km(self, lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+        from math import asin, cos, radians, sin, sqrt
+
+        d_lat = radians(lat2 - lat1)
+        d_lon = radians(lon2 - lon1)
+        a = sin(d_lat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(d_lon / 2) ** 2
+        return 6371.0 * 2 * asin(sqrt(a))
     def _city_center(self, city: str) -> GeoPoint:
         centers = {
             "北京": GeoPoint(longitude=116.4074, latitude=39.9042),
@@ -1198,3 +1415,10 @@ class AmapMCPAdapter:
             return f"{hours}小时{minutes}分钟" if minutes else f"{hours}小时"
         minutes = max(1, round(seconds / 60))
         return f"{minutes}分钟"
+
+
+
+
+
+
+
