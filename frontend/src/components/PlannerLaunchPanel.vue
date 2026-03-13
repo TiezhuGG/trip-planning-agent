@@ -20,7 +20,7 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <article class="rounded-[36px] border border-white/70 bg-white/88 p-6 shadow-card sm:p-8">
+  <article class="rounded-[36px] border border-[#d8e3ee] bg-white p-6 shadow-card sm:p-8">
     <div :class="compact ? 'space-y-5' : 'grid gap-6 xl:grid-cols-[0.98fr_1.02fr] xl:items-end'">
       <div>
         <div class="text-xs uppercase tracking-[0.28em] text-[#6f7f92]">Planner</div>
@@ -31,7 +31,7 @@ const emit = defineEmits<{
           <div
             v-for="item in inputSummary"
             :key="item.label"
-            class="rounded-[22px] bg-panel px-4 py-4 text-sm text-slate-600"
+            class="rounded-[22px] border border-[#e3ebf2] bg-[#f5f8fb] px-4 py-4 text-sm text-slate-600"
           >
             <div class="text-xs uppercase tracking-[0.16em] text-slate-400">
               {{ item.label }}
@@ -41,18 +41,18 @@ const emit = defineEmits<{
         </div>
       </div>
 
-      <div class="rounded-[28px] border border-[#dbe7ef] bg-[#f4f7fa] p-5 text-[#244761] shadow-sm sm:p-6">
-        <div class="flex items-center justify-between gap-4 text-sm text-[#587189]">
+      <div class="rounded-[28px] border border-[#16324d] bg-[#16324d] p-5 text-white shadow-sm sm:p-6">
+        <div class="flex items-center justify-between gap-4 text-sm text-white/72">
           <span>生成进度</span>
           <span>{{ progress ? `${progress}%` : "准备就绪" }}</span>
         </div>
-        <div class="mt-3 h-2 rounded-full bg-white">
+        <div class="mt-3 h-2 rounded-full bg-white/12">
           <div
-            class="h-2 rounded-full bg-[linear-gradient(90deg,#29597d,#d0a569)] transition-all duration-300"
+            class="h-2 rounded-full bg-white transition-all duration-300"
             :style="{ width: `${progress}%` }"
           ></div>
         </div>
-        <div class="mt-4 text-sm leading-6 text-[#587189]">
+        <div class="mt-4 text-sm leading-6 text-white/72">
           {{
             loading
               ? progressLabel
@@ -61,7 +61,7 @@ const emit = defineEmits<{
         </div>
         <button
           type="button"
-          class="mt-6 w-full rounded-[22px] bg-[#29597d] px-5 py-4 text-sm font-semibold text-white transition hover:bg-[#234b69] disabled:cursor-not-allowed disabled:bg-[#a3b6c5]"
+          class="mt-6 w-full rounded-[22px] border border-white/16 bg-white px-5 py-4 text-sm font-semibold text-[#16324d] transition hover:bg-[#edf3f8] disabled:cursor-not-allowed disabled:border-white/8 disabled:bg-white/55 disabled:text-[#6d8294]"
           :disabled="loading || !canSubmit"
           @click="emit('submit')"
         >

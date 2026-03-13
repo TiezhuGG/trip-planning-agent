@@ -7,6 +7,7 @@ import { generatePlan, getIntegrationStatus } from "./api/planning";
 import AgentTrace from "./components/AgentTrace.vue";
 import AmapMap from "./components/AmapMap.vue";
 import DailyItinerarySection from "./components/DailyItinerarySection.vue";
+import LandingHero from "./components/LandingHero.vue";
 import IntegrationPrecheckPanel from "./components/IntegrationPrecheckPanel.vue";
 import PlannerLaunchPanel from "./components/PlannerLaunchPanel.vue";
 import ResultSidebar from "./components/ResultSidebar.vue";
@@ -51,11 +52,6 @@ const stageOptions = [
   "获取天气与路线",
   "整合最终行程",
 ];
-// const storyCards = [
-//   { title: "理解偏好", text: "先整理节奏、预算、必去点和同行画像。" },
-//   { title: "编排行程", text: "把景点、天气、餐饮与路线整成每日动线。" },
-//   { title: "直接出发", text: "结果页围绕“今天怎么走”来展示。" },
-// ];
 
 const today = formatDate(new Date());
 const form = reactive<TripPlanningRequest>({
@@ -352,61 +348,13 @@ function budgetLabel(value: TripPlanningRequest["budget_level"]) {
 }
 </script>
 <template>
-  <div class="min-h-screen bg-[#edf2f5] text-ink">
+  <div class="min-h-screen bg-[#eef4f9] text-ink">
     <div class="mx-auto max-w-[1480px] px-4 py-6 sm:px-6 lg:px-8">
       <section
         v-if="!result"
         class="flex min-h-[calc(100vh-3rem)] flex-col justify-center gap-8"
       >
-        <header
-          class="rounded-[40px] bg-[linear-gradient(135deg,rgba(18,45,66,0.98),rgba(40,92,126,0.94)_54%,rgba(182,133,72,0.9))] px-6 py-8 text-white shadow-[0_30px_90px_rgba(23,49,73,0.22)] sm:px-8 lg:px-10 lg:py-10"
-        >
-          <div class="grid gap-8 xl:grid-cols-[1.1fr_0.9fr] xl:items-end">
-            <div>
-              <div
-                class="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-4 py-2 text-sm text-white/90"
-              >
-                <span class="h-2 w-2 rounded-full bg-[#f3d18b]"></span>多 Agent
-                城市旅行规划
-              </div>
-              <h1
-                class="mt-6 max-w-4xl font-display text-4xl font-semibold leading-tight sm:text-5xl xl:text-[56px]"
-              >
-                把一次旅行，整理成真正顺手的每日行动线。
-              </h1>
-              <p
-                class="mt-5 max-w-3xl text-sm leading-7 text-white/78 sm:text-base"
-              >
-                输入目的地、日期和偏好后，系统会自动联动景点、餐饮、天气与路线信息，生成一份更适合直接执行的多日行程。
-              </p>
-              <div class="mt-6 flex flex-wrap gap-2 text-sm text-white/80">
-                <span
-                  v-for="tag in summaryTags"
-                  :key="tag"
-                  class="rounded-full border border-white/18 bg-white/10 px-4 py-2"
-                  >{{ tag }}</span
-                >
-              </div>
-            </div>
-            <!-- <div class="grid gap-4 sm:grid-cols-3 xl:grid-cols-1">
-              <article
-                v-for="card in storyCards"
-                :key="card.title"
-                class="rounded-[26px] border border-white/14 bg-white/10 p-5"
-              >
-                <div class="text-xs uppercase tracking-[0.28em] text-white/55">
-                  Flow
-                </div>
-                <div class="mt-3 text-lg font-semibold text-white">
-                  {{ card.title }}
-                </div>
-                <p class="mt-2 text-sm leading-6 text-white/72">
-                  {{ card.text }}
-                </p>
-              </article>
-            </div> -->
-          </div>
-        </header>
+        <LandingHero :summary-tags="summaryTags" />
 
         <section class="grid gap-6 xl:grid-cols-[1.18fr_0.82fr]">
           <article
@@ -422,7 +370,7 @@ function budgetLabel(value: TripPlanningRequest["budget_level"]) {
                 </h2>
               </div>
               <div
-                class="rounded-full bg-[#eef4f7] px-4 py-2 text-sm text-[#48637b]"
+                class="rounded-full border border-[#d7e2ec] bg-[#eef4f9] px-4 py-2 text-sm text-[#35516b]"
               >
                 {{ form.days }} 天 · {{ paceLabel(form.pace) }}节奏
               </div>
@@ -489,8 +437,8 @@ function budgetLabel(value: TripPlanningRequest["budget_level"]) {
                   class="rounded-full border px-4 py-2 text-sm transition"
                   :class="
                     form.interests.includes(item)
-                      ? 'border-[#29597d] bg-[#29597d] text-white'
-                      : 'border-slate-200 bg-white text-slate-600 hover:border-[#89a4b9]'
+                      ? 'border-[#16324d] bg-[#16324d] text-white'
+                      : 'border-slate-200 bg-white text-slate-600 hover:border-[#7f97ad]'
                   "
                   @click="toggleSelection(form.interests, item)"
                 >
@@ -526,8 +474,8 @@ function budgetLabel(value: TripPlanningRequest["budget_level"]) {
                     class="rounded-full border px-4 py-2 text-sm transition"
                     :class="
                       form.pace === item.value
-                        ? 'border-[#29597d] bg-[#29597d] text-white'
-                        : 'border-slate-200 bg-white text-slate-600 hover:border-[#89a4b9]'
+                        ? 'border-[#16324d] bg-[#16324d] text-white'
+                        : 'border-slate-200 bg-white text-slate-600 hover:border-[#7f97ad]'
                     "
                     @click="form.pace = item.value"
                   >
@@ -545,8 +493,8 @@ function budgetLabel(value: TripPlanningRequest["budget_level"]) {
                     class="rounded-full border px-4 py-2 text-sm transition"
                     :class="
                       form.budget_level === item.value
-                        ? 'border-[#b27a46] bg-[#b27a46] text-white'
-                        : 'border-slate-200 bg-white text-slate-600 hover:border-[#c9a178]'
+                        ? 'border-[#16324d] bg-[#16324d] text-white'
+                        : 'border-slate-200 bg-white text-slate-600 hover:border-[#7f97ad]'
                     "
                     @click="form.budget_level = item.value"
                   >
@@ -582,8 +530,8 @@ function budgetLabel(value: TripPlanningRequest["budget_level"]) {
                     class="rounded-full border px-4 py-2 text-sm transition"
                     :class="
                       form.transport_preferences.includes(item)
-                        ? 'border-[#29597d] bg-[#29597d] text-white'
-                        : 'border-slate-200 bg-white text-slate-600 hover:border-[#89a4b9]'
+                        ? 'border-[#16324d] bg-[#16324d] text-white'
+                        : 'border-slate-200 bg-white text-slate-600 hover:border-[#7f97ad]'
                     "
                     @click="toggleSelection(form.transport_preferences, item)"
                   >
@@ -654,7 +602,7 @@ function budgetLabel(value: TripPlanningRequest["budget_level"]) {
           </div>
         </div>
         <article
-          class="rounded-[36px] bg-[linear-gradient(135deg,rgba(19,49,71,0.98),rgba(40,92,126,0.94)_55%,rgba(183,140,83,0.88))] p-6 text-white shadow-[0_30px_90px_rgba(23,49,73,0.2)] sm:p-8"
+          class="rounded-[36px] border border-[#16324d] bg-[#16324d] p-6 text-white shadow-[0_30px_90px_rgba(22,50,77,0.14)] sm:p-8"
         >
           <div class="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
             <div>
@@ -743,7 +691,7 @@ function budgetLabel(value: TripPlanningRequest["budget_level"]) {
                   </h2>
                 </div>
                 <span
-                  class="rounded-full bg-[#eff5f8] px-4 py-2 text-sm text-[#48637b]"
+                  class="rounded-full border border-[#d6e2ec] bg-[#eef4f9] px-4 py-2 text-sm text-[#35516b]"
                   >{{
                     result.planning_context.attractions.length
                   }}

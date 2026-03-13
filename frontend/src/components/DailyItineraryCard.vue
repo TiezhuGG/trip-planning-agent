@@ -52,9 +52,7 @@ function mealSubtitle(item: MealRecommendation | POIRecommendation) {
 </script>
 
 <template>
-  <article
-    class="rounded-[28px] border border-slate-100 bg-[linear-gradient(180deg,#f7fafb,#f3f6f8)] px-5 py-5 shadow-sm"
-  >
+  <article class="rounded-[28px] border border-[#dbe5ef] bg-white px-5 py-5 shadow-sm">
     <div class="flex flex-wrap items-start justify-between gap-4">
       <div>
         <div class="text-lg font-semibold text-ink">
@@ -65,13 +63,13 @@ function mealSubtitle(item: MealRecommendation | POIRecommendation) {
         </div>
       </div>
       <div class="flex flex-wrap items-center gap-2">
-        <span class="rounded-full bg-white px-4 py-2 text-sm text-slate-600 shadow-sm">
+        <span class="rounded-full border border-[#d7e2ec] bg-[#eef4f9] px-4 py-2 text-sm text-[#35516b] shadow-sm">
           {{ weather?.day_weather || "--" }}
           {{ weather ? `${weather.low_temperature}°-${weather.high_temperature}°` : "" }}
         </span>
         <button
           type="button"
-          class="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm text-slate-600 shadow-sm"
+          class="rounded-full border border-[#c7d6e4] bg-white px-4 py-2 text-sm text-[#35516b] shadow-sm"
           @click="onToggle"
         >
           {{ expanded ? "收起详情" : "展开详情" }}
@@ -90,7 +88,7 @@ function mealSubtitle(item: MealRecommendation | POIRecommendation) {
             <div
               v-for="activity in day.activities"
               :key="`${day.day_number}-${activity.start_time}-${activity.title}`"
-              class="rounded-[22px] bg-white px-4 py-4 text-sm text-slate-600 shadow-sm"
+              class="rounded-[22px] border border-[#e3ebf2] bg-[#f8fbfd] px-4 py-4 text-sm text-slate-600 shadow-sm"
             >
               <div class="font-medium text-ink">
                 {{ activity.start_time }} - {{ activity.end_time }} · {{ activity.title }}
@@ -108,14 +106,14 @@ function mealSubtitle(item: MealRecommendation | POIRecommendation) {
           </template>
           <div
             v-else
-            class="rounded-[22px] bg-white px-4 py-4 text-sm text-slate-500 shadow-sm"
+            class="rounded-[22px] border border-[#e3ebf2] bg-[#f8fbfd] px-4 py-4 text-sm text-slate-500 shadow-sm"
           >
             暂无详细活动安排
           </div>
         </div>
 
         <div class="space-y-3">
-          <div class="rounded-[22px] bg-white px-4 py-4 text-sm text-slate-600 shadow-sm">
+          <div class="rounded-[22px] border border-[#e3ebf2] bg-[#f8fbfd] px-4 py-4 text-sm text-slate-600 shadow-sm">
             <div class="font-medium text-ink">路线概览</div>
             <div class="mt-3 leading-6">
               {{ routeSummary?.distance_text || "距离待补充" }}
@@ -130,7 +128,8 @@ function mealSubtitle(item: MealRecommendation | POIRecommendation) {
             </div>
           </div>
 
-            <div class="rounded-[22px] bg-white px-4 py-4 text-sm text-slate-600 shadow-sm">
+          <div class="space-y-3">
+            <div class="rounded-[22px] border border-[#e3ebf2] bg-[#f8fbfd] px-4 py-4 text-sm text-slate-600 shadow-sm">
               <div class="font-medium text-ink">天气与体感</div>
               <div v-if="weather" class="mt-3">
                 <div>
@@ -148,13 +147,13 @@ function mealSubtitle(item: MealRecommendation | POIRecommendation) {
               </div>
             </div>
 
-            <div class="rounded-[22px] bg-white px-4 py-4 text-sm text-slate-600 shadow-sm">
+            <div class="rounded-[22px] border border-[#e3ebf2] bg-[#f8fbfd] px-4 py-4 text-sm text-slate-600 shadow-sm">
               <div class="font-medium text-ink">餐饮推荐</div>
               <div v-if="mealRecommendations.length" class="mt-3 space-y-2">
                 <div
                   v-for="meal in mealRecommendations"
                   :key="`${day.day_number}-${mealTitle(meal)}-${mealSubtitle(meal)}`"
-                  class="rounded-[18px] bg-panel px-3 py-3"
+                  class="rounded-[18px] border border-[#dfe8f1] bg-white px-3 py-3"
                 >
                   <div class="font-medium text-ink">
                     {{ mealTitle(meal) }}
@@ -168,6 +167,7 @@ function mealSubtitle(item: MealRecommendation | POIRecommendation) {
                 暂无餐饮推荐
               </div>
             </div>
+          </div>
         </div>
       </div>
     </div>
