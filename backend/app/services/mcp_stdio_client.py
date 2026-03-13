@@ -1,6 +1,9 @@
-﻿import asyncio
-import json
+from __future__ import annotations
+
+import asyncio
 import os
+import shutil
+from pathlib import Path
 from typing import Any
 
 
@@ -20,149 +23,161 @@ class MCPStdioClient:
         self.args = args or []
         self.env = env or {}
         self.timeout_seconds = timeout_seconds
-        self._process: asyncio.subprocess.Process | None = None
-        self._pending: dict[int, asyncio.Future] = {}
-        self._request_id = 0
-        self._write_lock = asyncio.Lock()
-        self._reader_task: asyncio.Task | None = None
-        self._stderr_task: asyncio.Task | None = None
+        self.resolved_command = command
+        self.stderr_tail: list[str] = []
 
     async def connect(self) -> None:
-        if self._process is not None:
-            return
+        self.resolved_command = self._resolve_command()
+        if not self.resolved_command:
+            raise MCPProtocolError("MCP command is empty.")
 
-        self._process = await asyncio.create_subprocess_exec(
-            self.command,
-            *self.args,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env={**os.environ, **self.env},
-        )
-
-        self._reader_task = asyncio.create_task(self._read_loop())
-        self._stderr_task = asyncio.create_task(self._drain_stderr())
-
-        await self._request(
-            "initialize",
-            {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "trip-planning-agent", "version": "0.1.0"},
-            },
-        )
-        await self._notify("notifications/initialized", {})
+        self._load_sdk()
 
     async def list_tools(self) -> dict[str, Any]:
         await self.connect()
-        return await self._request("tools/list", {})
+        return await self._run_with_session(self._list_tools_once)
 
     async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         await self.connect()
-        return await self._request(
-            "tools/call",
-            {
-                "name": tool_name,
-                "arguments": arguments,
-            },
+        return await self._run_with_session(
+            lambda session: self._call_tool_once(session, tool_name, arguments)
         )
 
     async def close(self) -> None:
-        if self._process is None:
-            return
+        return
 
-        if self._process.stdin:
-            self._process.stdin.close()
-
-        if self._reader_task:
-            self._reader_task.cancel()
-        if self._stderr_task:
-            self._stderr_task.cancel()
-
-        await self._process.wait()
-        self._process = None
-
-    async def _notify(self, method: str, params: dict[str, Any]) -> None:
-        payload = {"jsonrpc": "2.0", "method": method, "params": params}
-        await self._send(payload)
-
-    async def _request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
-        self._request_id += 1
-        request_id = self._request_id
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future = loop.create_future()
-        self._pending[request_id] = future
-
-        payload = {
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "method": method,
-            "params": params,
+    def get_debug_snapshot(self) -> dict[str, Any]:
+        return {
+            "command": self.command,
+            "resolved_command": self.resolved_command,
+            "args": self.args,
+            "stderr_tail": self.stderr_tail[-5:],
         }
-        await self._send(payload)
+
+    async def _run_with_session(self, operation):
+        ClientSession, StdioServerParameters, stdio_client = self._load_sdk()
+
+        if self._is_windows_selector_policy():
+            raise MCPProtocolError(
+                "当前后端运行在 WindowsSelectorEventLoopPolicy 下，无法使用 stdio MCP 子进程。"
+                "这通常是因为使用了 uvicorn --reload。"
+                "请改用不带 --reload 的启动方式，或改造为独立的 HTTP/SSE MCP 服务。"
+            )
+
+        server_params = StdioServerParameters(
+            command=self.resolved_command,
+            args=self.args,
+            env={**os.environ, **self.env} if self.env else dict(os.environ),
+        )
 
         try:
-            response = await asyncio.wait_for(future, timeout=self.timeout_seconds)
-        finally:
-            self._pending.pop(request_id, None)
-
-        if "error" in response:
-            raise MCPProtocolError(str(response["error"]))
-
-        return response.get("result", {})
-
-    async def _send(self, payload: dict[str, Any]) -> None:
-        if self._process is None or self._process.stdin is None:
-            raise MCPProtocolError("MCP process is not connected.")
-
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        message = f"Content-Length: {len(body)}\r\n\r\n".encode("utf-8") + body
-        async with self._write_lock:
-            self._process.stdin.write(message)
-            await self._process.stdin.drain()
-
-    async def _read_loop(self) -> None:
-        assert self._process is not None and self._process.stdout is not None
-        reader = self._process.stdout
-
-        try:
-            while True:
-                headers = {}
-                while True:
-                    line = await reader.readline()
-                    if not line:
-                        return
-                    if line in {b"\r\n", b"\n"}:
-                        break
-                    decoded = line.decode("utf-8").strip()
-                    if ":" in decoded:
-                        key, value = decoded.split(":", 1)
-                        headers[key.strip().lower()] = value.strip()
-
-                content_length = int(headers.get("content-length", "0"))
-                if content_length <= 0:
-                    continue
-
-                body = await reader.readexactly(content_length)
-                message = json.loads(body.decode("utf-8"))
-                if "id" in message and message["id"] in self._pending:
-                    self._pending[message["id"]].set_result(message)
-        except asyncio.CancelledError:
-            raise
+            async with stdio_client(server_params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    return await operation(session)
         except Exception as exc:
-            for future in self._pending.values():
-                if not future.done():
-                    future.set_exception(exc)
+            raise MCPProtocolError(f"MCP SDK 调用失败: {exc.__class__.__name__}: {exc}") from exc
 
-    async def _drain_stderr(self) -> None:
-        if self._process is None or self._process.stderr is None:
-            return
+    async def _list_tools_once(self, session) -> dict[str, Any]:
+        response = await session.list_tools()
+        tools = getattr(response, "tools", [])
+        return {"tools": [self._serialize(tool) for tool in tools]}
 
+    async def _call_tool_once(
+        self,
+        session,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        response = await session.call_tool(tool_name, arguments)
+        return self._serialize(response)
+
+    def _serialize(self, value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, list):
+            return [self._serialize(item) for item in value]
+        if isinstance(value, tuple):
+            return [self._serialize(item) for item in value]
+        if isinstance(value, dict):
+            return {str(key): self._serialize(item) for key, item in value.items()}
+
+        model_dump = getattr(value, "model_dump", None)
+        if callable(model_dump):
+            return model_dump(mode="json")
+
+        dict_method = getattr(value, "dict", None)
+        if callable(dict_method):
+            return dict_method()
+
+        if hasattr(value, "__dict__"):
+            return {
+                str(key): self._serialize(item)
+                for key, item in vars(value).items()
+                if not str(key).startswith("_")
+            }
+
+        return str(value)
+
+    def _load_sdk(self):
         try:
-            while True:
-                line = await self._process.stderr.readline()
-                if not line:
-                    return
-        except asyncio.CancelledError:
-            raise
+            from mcp import ClientSession, StdioServerParameters
+            from mcp.client.stdio import stdio_client
+        except Exception as exc:
+            raise MCPProtocolError(
+                '未安装官方 MCP Python SDK，请在 backend 目录执行: .\\venv\\Scripts\\python.exe -m pip install "mcp>=1,<2"'
+            ) from exc
 
+        return ClientSession, StdioServerParameters, stdio_client
+
+    def _is_windows_selector_policy(self) -> bool:
+        if os.name != "nt":
+            return False
+
+        policy = asyncio.get_event_loop_policy()
+        selector_cls = getattr(asyncio, "WindowsSelectorEventLoopPolicy", None)
+        if selector_cls is None:
+            return False
+        return isinstance(policy, selector_cls)
+
+    def _resolve_command(self) -> str:
+        command = self.command.strip()
+        if not command:
+            return ""
+
+        command_path = Path(command)
+        if command_path.is_absolute() and command_path.exists():
+            return str(command_path)
+
+        if command_path.parent != Path('.') and command_path.exists():
+            return str(command_path.resolve())
+
+        resolved = shutil.which(command)
+        if resolved:
+            return resolved
+
+        backend_dir = Path(__file__).resolve().parents[2]
+        repo_dir = backend_dir.parent
+        executable_name = command_path.name
+
+        if os.name == "nt" and not command_path.suffix:
+            executable_name = f"{executable_name}.exe"
+            candidates = [
+                backend_dir / "venv" / "Scripts" / executable_name,
+                backend_dir / ".venv" / "Scripts" / executable_name,
+                repo_dir / "backend" / "venv" / "Scripts" / executable_name,
+                repo_dir / "backend" / ".venv" / "Scripts" / executable_name,
+            ]
+        else:
+            candidates = [
+                backend_dir / "venv" / "bin" / executable_name,
+                backend_dir / ".venv" / "bin" / executable_name,
+                repo_dir / "backend" / "venv" / "bin" / executable_name,
+                repo_dir / "backend" / ".venv" / "bin" / executable_name,
+            ]
+
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate)
+
+        return command

@@ -8,15 +8,16 @@ from app.services.planner import TravelPlannerService
 
 router = APIRouter(tags=["planning"])
 
-settings = get_settings()
-planner_service = TravelPlannerService(settings)
+
+def get_planner_service() -> TravelPlannerService:
+    return TravelPlannerService(get_settings())
 
 
 @router.get("/plans/integrations/status", response_model=IntegrationStatus)
 async def get_integration_status() -> IntegrationStatus:
-    return await planner_service.diagnose_integrations()
+    return await get_planner_service().diagnose_integrations()
 
 
 @router.post("/plans/generate", response_model=PlanningResponse)
 async def generate_plan(payload: TripPlanningRequest) -> PlanningResponse:
-    return await planner_service.generate(payload, generated_at=datetime.utcnow())
+    return await get_planner_service().generate(payload, generated_at=datetime.utcnow())

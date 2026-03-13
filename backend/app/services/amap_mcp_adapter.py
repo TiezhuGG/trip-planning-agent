@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from typing import Any
 
@@ -54,7 +55,10 @@ class AmapMCPAdapter:
 
         if self.client is not None:
             try:
-                catalog = await self._ensure_tool_catalog(force_refresh=True)
+                catalog = await asyncio.wait_for(
+                    self._ensure_tool_catalog(force_refresh=True),
+                    timeout=self.settings.amap_mcp_timeout_seconds + 2,
+                )
                 available_tools = [item.get("name", "") for item in catalog if item.get("name")]
                 mcp_connected = True
                 resolved_tools = {
@@ -72,7 +76,7 @@ class AmapMCPAdapter:
                         f"MCP 已连接，但仍缺少工具映射: {', '.join(missing_tools)}。"
                     )
             except Exception as exc:
-                warnings.append(f"MCP 连接失败: {exc}")
+                warnings.append(self._format_connection_error(exc))
         elif not self.settings.enable_mock_mcp:
             warnings.append("未配置 MCP 启动命令，且已关闭 Mock。规划请求会直接失败。")
 
@@ -130,11 +134,7 @@ class AmapMCPAdapter:
         for query in queries:
             raw = await self._call_tool_for_purpose(
                 "poi_search",
-                {
-                    "city": request.destination,
-                    "query": query,
-                    "types": ["sightseeing"],
-                },
+                self._build_poi_search_arguments(request.destination, query),
                 trace,
             )
             pois.extend(self._normalize_pois(raw, fallback_kind="景点"))
@@ -146,11 +146,7 @@ class AmapMCPAdapter:
         preference = request.dining_preferences[0] if request.dining_preferences else "特色餐厅"
         raw = await self._call_tool_for_purpose(
             "poi_search",
-            {
-                "city": request.destination,
-                "query": f"{request.destination} {preference}",
-                "types": ["restaurant"],
-            },
+            self._build_poi_search_arguments(request.destination, f"{request.destination} {preference}"),
             trace,
         )
         return self._normalize_pois(raw, fallback_kind="餐厅")
@@ -160,11 +156,7 @@ class AmapMCPAdapter:
     ) -> list[POIRecommendation]:
         raw = await self._call_tool_for_purpose(
             "poi_search",
-            {
-                "city": request.destination,
-                "query": f"{request.destination} {request.hotel_style}",
-                "types": ["hotel"],
-            },
+            self._build_poi_search_arguments(request.destination, f"{request.destination} {request.hotel_style}"),
             trace,
         )
         return self._normalize_pois(raw, fallback_kind="酒店")
@@ -174,11 +166,7 @@ class AmapMCPAdapter:
     ) -> WeatherSummary:
         raw = await self._call_tool_for_purpose(
             "weather",
-            {
-                "city": request.destination,
-                "date": str(request.start_date),
-                "days": request.days,
-            },
+            {"city": request.destination},
             trace,
         )
         return self._normalize_weather(raw, request)
@@ -195,15 +183,12 @@ class AmapMCPAdapter:
         if self.client is None:
             return self._mock_route(day_number, origin, destination, waypoints, mode)
 
+        tool_name = self._resolve_route_tool_name(mode)
         raw = await self._call_tool_for_purpose(
             "route_plan",
-            {
-                "origin": self._route_endpoint(origin),
-                "destination": self._route_endpoint(destination),
-                "waypoints": [self._route_endpoint(item) for item in waypoints],
-                "mode": mode,
-            },
+            self._build_route_arguments(origin, destination),
             trace,
+            tool_name_override=tool_name,
         )
         return self._normalize_route(raw, day_number, origin, destination, waypoints, mode)
 
@@ -212,17 +197,24 @@ class AmapMCPAdapter:
         purpose: str,
         arguments: dict[str, Any],
         trace: list[ToolCallRecord],
+        tool_name_override: str | None = None,
     ) -> Any:
         assert self.client is not None
-        await self._ensure_tool_catalog()
-        tool_name = self._resolve_tool_name(purpose)
+        await asyncio.wait_for(
+            self._ensure_tool_catalog(),
+            timeout=self.settings.amap_mcp_timeout_seconds + 2,
+        )
+        tool_name = tool_name_override or self._resolve_tool_name(purpose)
         if not tool_name:
             available = [item.get("name", "") for item in (self._tool_catalog or []) if item.get("name")]
             raise MCPProtocolError(
-                f"?????? {purpose} ?????????: {', '.join(available) if available else '?'}"
+                f"未找到可用于 {purpose} 的 MCP 工具；当前可用工具: {', '.join(available) if available else '无'}"
             )
         try:
-            result = await self.client.call_tool(tool_name, arguments)
+            result = await asyncio.wait_for(
+                self.client.call_tool(tool_name, arguments),
+                timeout=self.settings.amap_mcp_timeout_seconds + 2,
+            )
             normalized = self._unwrap_tool_result(result)
             trace.append(
                 ToolCallRecord(
@@ -260,7 +252,10 @@ class AmapMCPAdapter:
         if self._tool_catalog is not None and not force_refresh:
             return self._tool_catalog
 
-        result = await self.client.list_tools()
+        result = await asyncio.wait_for(
+            self.client.list_tools(),
+            timeout=self.settings.amap_mcp_timeout_seconds + 2,
+        )
         tools = result.get("tools", []) if isinstance(result, dict) else []
         if not isinstance(tools, list):
             tools = []
@@ -308,10 +303,76 @@ class AmapMCPAdapter:
 
     def _purpose_keywords(self, purpose: str) -> list[str]:
         return {
-            "poi_search": ["poi", "place", "search", "around", "keyword"],
-            "route_plan": ["route", "direction", "distance", "path", "navigation"],
+            "poi_search": ["text_search", "poi", "keyword", "search", "place"],
+            "route_plan": ["direction", "driving", "walking", "transit", "bicycling", "address"],
             "weather": ["weather", "forecast", "climate"],
         }[purpose]
+
+    def _resolve_route_tool_name(self, mode: str) -> str | None:
+        catalog = self._tool_catalog or []
+        available = [str(item.get("name", "")) for item in catalog if item.get("name")]
+        preferred = {
+            "driving": "maps_direction_driving_by_address",
+            "transit": "maps_direction_transit_integrated_by_address",
+            "walking": "maps_direction_walking_by_address",
+            "bicycling": "maps_direction_bicycling_by_address",
+        }.get(mode, self.settings.amap_mcp_tool_route_plan)
+
+        if preferred in available:
+            return preferred
+
+        fallback_keywords = {
+            "driving": ["driving", "direction"],
+            "transit": ["transit", "integrated", "direction"],
+            "walking": ["walking", "direction"],
+            "bicycling": ["bicycling", "cycling", "direction"],
+        }.get(mode, ["direction"])
+
+        best_name = ""
+        best_score = -1
+        for item in catalog:
+            name = str(item.get("name", ""))
+            description = str(item.get("description", ""))
+            text = f"{name} {description}".lower()
+            score = sum(1 for keyword in fallback_keywords if keyword in text)
+            if score > best_score:
+                best_score = score
+                best_name = name
+
+        if best_name and best_score > 0:
+            return best_name
+
+        return self._resolve_tool_name("route_plan", strict=False)
+
+    def _build_poi_search_arguments(self, city: str, keywords: str) -> dict[str, Any]:
+        return {
+            "keywords": keywords,
+            "city": city,
+            "city_limit": True,
+        }
+
+    def _build_route_arguments(
+        self,
+        origin: POIRecommendation,
+        destination: POIRecommendation,
+    ) -> dict[str, Any]:
+        return {
+            "origin": self._route_address(origin),
+            "destination": self._route_address(destination),
+            "city": origin.district or origin.address or origin.name,
+            "cityd": destination.district or destination.address or destination.name,
+        }
+
+    def _format_connection_error(self, exc: Exception) -> str:
+        detail = f"{exc.__class__.__name__}: {exc}" if str(exc) else exc.__class__.__name__
+        if self.client is None:
+            return f"MCP 连接失败: {detail}"
+
+        snapshot = self.client.get_debug_snapshot()
+        resolved_command = snapshot.get("resolved_command") or snapshot.get("command") or self.settings.amap_mcp_command
+        stderr_tail = snapshot.get("stderr_tail") or []
+        stderr_text = f"；stderr: {' | '.join(stderr_tail)}" if stderr_tail else ""
+        return f"MCP 连接失败: {detail}；命令: {resolved_command}{stderr_text}"
 
     def _unwrap_tool_result(self, result: Any) -> Any:
         if isinstance(result, dict) and "content" in result:
@@ -710,9 +771,11 @@ class AmapMCPAdapter:
             points.append(GeoPoint(longitude=poi.longitude, latitude=poi.latitude))
         return points
 
-    def _route_endpoint(self, poi: POIRecommendation) -> str:
-        if poi.longitude is not None and poi.latitude is not None:
-            return f"{poi.longitude},{poi.latitude}"
+    def _route_address(self, poi: POIRecommendation) -> str:
+        if poi.address:
+            return poi.address
+        if poi.district:
+            return f"{poi.district}{poi.name}"
         return poi.name
 
     def _city_center(self, city: str) -> GeoPoint:

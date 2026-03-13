@@ -18,8 +18,8 @@ class Settings(BaseSettings):
     amap_mcp_command: str = ""
     amap_mcp_args: list[str] = Field(default_factory=list)
     amap_mcp_env: dict[str, str] = Field(default_factory=dict)
-    amap_mcp_tool_poi_search: str = "maps_poi_search"
-    amap_mcp_tool_route_plan: str = "maps_route_plan"
+    amap_mcp_tool_poi_search: str = "maps_text_search"
+    amap_mcp_tool_route_plan: str = "maps_direction_driving_by_address"
     amap_mcp_tool_weather: str = "maps_weather"
     amap_mcp_timeout_seconds: int = 20
     enable_mock_mcp: bool = True

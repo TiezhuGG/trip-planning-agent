@@ -1,12 +1,12 @@
 ﻿<script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import html2canvas from 'html2canvas'
 import jsPDF from 'jspdf'
 
-import { generatePlan } from './api/planning'
+import { generatePlan, getIntegrationStatus } from './api/planning'
 import AgentTrace from './components/AgentTrace.vue'
 import AmapMap from './components/AmapMap.vue'
-import type { PlanningResponse, TripPlanningRequest } from './types/planning'
+import type { IntegrationStatus, PlanningResponse, TripPlanningRequest } from './types/planning'
 
 const interestOptions = ['自然风光', '历史文化', '美食探索', '拍照打卡', '夜游休闲', '艺术展览']
 const transportOptions = ['公共交通', '打车', '自驾', '步行', '骑行']
@@ -50,6 +50,9 @@ const progressLabel = ref(stageOptions[0])
 const errorMessage = ref('')
 const result = ref<PlanningResponse | null>(null)
 const exportRoot = ref<HTMLElement | null>(null)
+const integrationStatus = ref<IntegrationStatus>(createEmptyIntegrationStatus())
+const integrationLoading = ref(false)
+const integrationError = ref('')
 let progressTimer: number | null = null
 
 const budgetCards = computed(() => {
@@ -61,6 +64,17 @@ const budgetCards = computed(() => {
     ['餐饮费用', budget.food],
     ['交通费用', budget.transport],
   ]
+})
+
+const currentIntegrationStatus = computed(() => result.value?.integration_status ?? integrationStatus.value)
+
+const combinedWarnings = computed(() => {
+  const warningSet = new Set<string>()
+  for (const warning of currentIntegrationStatus.value.warnings) {
+    if (warning) warningSet.add(warning)
+  }
+  if (integrationError.value) warningSet.add(integrationError.value)
+  return [...warningSet]
 })
 
 watch([startDate, endDate], ([start, end]) => {
@@ -86,6 +100,39 @@ watch(
     endDate.value = addDays(startDate.value, safe - 1)
   },
 )
+
+onMounted(() => {
+  void loadIntegrationStatus()
+})
+
+function createEmptyIntegrationStatus(): IntegrationStatus {
+  return {
+    mcp_enabled: false,
+    mcp_connected: false,
+    mcp_command: '',
+    available_tools: [],
+    resolved_tools: {},
+    missing_tools: [],
+    map_rendering_enabled: false,
+    map_js_key_configured: false,
+    security_js_code_configured: false,
+    mock_enabled: true,
+    warnings: [],
+  }
+}
+
+async function loadIntegrationStatus() {
+  integrationLoading.value = true
+  integrationError.value = ''
+  try {
+    integrationStatus.value = await getIntegrationStatus()
+  } catch (error) {
+    integrationError.value = error instanceof Error ? error.message : '获取集成状态失败，请检查后端服务。'
+    integrationStatus.value = createEmptyIntegrationStatus()
+  } finally {
+    integrationLoading.value = false
+  }
+}
 
 function formatDate(date: Date) {
   const year = date.getFullYear()
@@ -158,6 +205,7 @@ async function submitPlan() {
         seniors: Number(form.travelers.seniors) || 0,
       },
     })
+    integrationStatus.value = result.value.integration_status
     stopProgress(true)
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '生成行程失败，请稍后重试。'
@@ -224,7 +272,7 @@ function routeModeLabel(mode: string) {
         </div>
       </header>
 
-      <section v-if="!result" class="mt-8 grid gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
+      <section v-if="!result" class="mt-8 grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
         <div class="space-y-6 rounded-[32px] bg-white/90 p-6 shadow-card">
           <div class="grid gap-4 lg:grid-cols-4">
             <label class="text-sm text-slate-600 lg:col-span-2"><span class="mb-2 block">目的地城市</span><input v-model="form.destination" class="w-full rounded-2xl border border-slate-200 px-4 py-3" /></label>
@@ -275,6 +323,58 @@ function routeModeLabel(mode: string) {
             <button type="button" class="mt-5 w-full rounded-[22px] bg-gradient-to-r from-iris to-irisDark px-5 py-4 text-sm font-medium text-white shadow-glow disabled:opacity-60" :disabled="loading || !form.destination" @click="submitPlan">{{ loading ? '规划中...' : '开始规划' }}</button>
           </div>
           <div class="rounded-[28px] bg-white/90 p-5 shadow-card text-sm text-slate-600">
+            <div class="flex items-center justify-between gap-3">
+              <div>
+                <div class="text-xs uppercase tracking-[0.28em] text-iris/70">Integration Precheck</div>
+                <div class="mt-2 text-xl font-semibold text-ink">集成预检查</div>
+              </div>
+              <button type="button" class="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs text-slate-600 shadow-sm disabled:opacity-60" :disabled="integrationLoading" @click="loadIntegrationStatus">
+                {{ integrationLoading ? '检查中...' : '刷新状态' }}
+              </button>
+            </div>
+            <div class="mt-4 flex flex-wrap gap-2 text-xs">
+              <span class="rounded-full px-3 py-1" :class="currentIntegrationStatus.mcp_connected ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'">
+                {{ currentIntegrationStatus.mcp_connected ? 'MCP 已连接' : 'MCP 未连接' }}
+              </span>
+              <span class="rounded-full px-3 py-1" :class="currentIntegrationStatus.map_js_key_configured ? 'bg-sky-100 text-sky-700' : 'bg-slate-100 text-slate-700'">
+                {{ currentIntegrationStatus.map_js_key_configured ? 'JS Key 已配置' : 'JS Key 未配置' }}
+              </span>
+              <span class="rounded-full px-3 py-1" :class="currentIntegrationStatus.security_js_code_configured ? 'bg-sky-100 text-sky-700' : 'bg-slate-100 text-slate-700'">
+                {{ currentIntegrationStatus.security_js_code_configured ? '安全密钥已配置' : '安全密钥未配置' }}
+              </span>
+              <span class="rounded-full px-3 py-1" :class="currentIntegrationStatus.mock_enabled ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'">
+                {{ currentIntegrationStatus.mock_enabled ? 'Mock 已开启' : 'Mock 已关闭' }}
+              </span>
+            </div>
+            <div class="mt-4 rounded-[22px] border border-slate-100 bg-panel px-4 py-4">
+              <div class="text-xs text-slate-500">MCP 启动命令</div>
+              <div class="mt-2 break-all rounded-[18px] bg-white px-3 py-2 text-xs text-ink shadow-sm">
+                {{ currentIntegrationStatus.mcp_command || '未配置' }}
+              </div>
+            </div>
+            <div class="mt-4 rounded-[22px] border border-slate-100 bg-panel px-4 py-4">
+              <div class="text-xs text-slate-500">可用工具</div>
+              <div v-if="currentIntegrationStatus.available_tools.length" class="mt-3 flex flex-wrap gap-2">
+                <span v-for="tool in currentIntegrationStatus.available_tools" :key="tool" class="rounded-full bg-white px-3 py-1 text-xs shadow-sm">{{ tool }}</span>
+              </div>
+              <div v-else class="mt-2 text-xs text-slate-500">暂未探测到工具列表</div>
+            </div>
+            <div class="mt-4 rounded-[22px] border border-slate-100 bg-panel px-4 py-4">
+              <div class="text-xs text-slate-500">工具映射</div>
+              <div class="mt-3 grid gap-2 sm:grid-cols-3">
+                <div class="rounded-[18px] bg-white px-3 py-3 shadow-sm"><div class="text-[11px] uppercase text-slate-400">POI</div><div class="mt-1 break-all text-ink">{{ currentIntegrationStatus.resolved_tools.poi_search || '待匹配' }}</div></div>
+                <div class="rounded-[18px] bg-white px-3 py-3 shadow-sm"><div class="text-[11px] uppercase text-slate-400">Route</div><div class="mt-1 break-all text-ink">{{ currentIntegrationStatus.resolved_tools.route_plan || '待匹配' }}</div></div>
+                <div class="rounded-[18px] bg-white px-3 py-3 shadow-sm"><div class="text-[11px] uppercase text-slate-400">Weather</div><div class="mt-1 break-all text-ink">{{ currentIntegrationStatus.resolved_tools.weather || '待匹配' }}</div></div>
+              </div>
+            </div>
+            <div v-if="combinedWarnings.length" class="mt-4 rounded-[22px] border border-amber-200 bg-amber-50 px-4 py-4 text-amber-800">
+              <div class="font-medium">注意事项</div>
+              <div class="mt-3 space-y-2 text-xs">
+                <div v-for="warning in combinedWarnings" :key="warning">{{ warning }}</div>
+              </div>
+            </div>
+          </div>
+          <div class="rounded-[28px] bg-white/90 p-5 shadow-card text-sm text-slate-600">
             <div class="font-medium text-ink">本次输入摘要</div>
             <div class="mt-3 flex items-center justify-between"><span>目的地</span><span class="font-medium text-ink">{{ form.destination }}</span></div>
             <div class="mt-3 flex items-center justify-between"><span>日期</span><span class="font-medium text-ink">{{ startDate }} - {{ endDate }}</span></div>
@@ -321,36 +421,36 @@ function routeModeLabel(mode: string) {
           <div class="flex flex-wrap items-start justify-between gap-4">
             <div>
               <div class="text-xs uppercase tracking-[0.32em] text-iris/70">Integration Status</div>
-              <h2 class="mt-3 text-2xl font-semibold text-ink">?? MCP ???????</h2>
+              <h2 class="mt-3 text-2xl font-semibold text-ink">MCP 与地图集成状态</h2>
             </div>
             <div class="flex flex-wrap gap-2 text-xs">
-              <span class="rounded-full px-3 py-1" :class="result.integration_status.mcp_connected ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'">{{ result.integration_status.mcp_connected ? 'MCP ???' : 'MCP ???' }}</span>
-              <span class="rounded-full px-3 py-1" :class="result.integration_status.map_js_key_configured ? 'bg-sky-100 text-sky-700' : 'bg-slate-100 text-slate-700'">{{ result.integration_status.map_js_key_configured ? 'JS Key ???' : 'JS Key ???' }}</span>
-              <span class="rounded-full px-3 py-1" :class="result.integration_status.mock_enabled ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'">{{ result.integration_status.mock_enabled ? 'Mock ???' : 'Mock ???' }}</span>
+              <span class="rounded-full px-3 py-1" :class="currentIntegrationStatus.mcp_connected ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'">{{ currentIntegrationStatus.mcp_connected ? 'MCP 已连接' : 'MCP 未连接' }}</span>
+              <span class="rounded-full px-3 py-1" :class="currentIntegrationStatus.map_js_key_configured ? 'bg-sky-100 text-sky-700' : 'bg-slate-100 text-slate-700'">{{ currentIntegrationStatus.map_js_key_configured ? 'JS Key 已配置' : 'JS Key 未配置' }}</span>
+              <span class="rounded-full px-3 py-1" :class="currentIntegrationStatus.mock_enabled ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'">{{ currentIntegrationStatus.mock_enabled ? 'Mock 已开启' : 'Mock 已关闭' }}</span>
             </div>
           </div>
           <div class="mt-5 grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
             <div class="rounded-[24px] border border-slate-100 bg-panel px-4 py-4 text-sm text-slate-600">
-              <div class="font-medium text-ink">MCP ????</div>
-              <div class="mt-2 break-all rounded-[18px] bg-white px-3 py-2 text-xs shadow-sm">{{ result.integration_status.mcp_command || '???' }}</div>
-              <div class="mt-4 font-medium text-ink">????????</div>
+              <div class="font-medium text-ink">MCP 启动命令</div>
+              <div class="mt-2 break-all rounded-[18px] bg-white px-3 py-2 text-xs shadow-sm">{{ currentIntegrationStatus.mcp_command || '未配置' }}</div>
+              <div class="mt-4 font-medium text-ink">已探测工具列表</div>
               <div class="mt-3 flex flex-wrap gap-2">
-                <span v-for="tool in result.integration_status.available_tools" :key="tool" class="rounded-full bg-white px-3 py-1 text-xs shadow-sm">{{ tool }}</span>
+                <span v-for="tool in currentIntegrationStatus.available_tools" :key="tool" class="rounded-full bg-white px-3 py-1 text-xs shadow-sm">{{ tool }}</span>
               </div>
             </div>
             <div class="space-y-4">
               <div class="rounded-[24px] border border-slate-100 bg-panel px-4 py-4 text-sm text-slate-600">
-                <div class="font-medium text-ink">??????</div>
+                <div class="font-medium text-ink">工具映射结果</div>
                 <div class="mt-3 grid gap-2 md:grid-cols-3">
-                  <div class="rounded-[18px] bg-white px-3 py-3 shadow-sm"><div class="text-xs text-slate-500">POI</div><div class="mt-1 break-all text-ink">{{ result.integration_status.resolved_tools.poi_search || '???' }}</div></div>
-                  <div class="rounded-[18px] bg-white px-3 py-3 shadow-sm"><div class="text-xs text-slate-500">Route</div><div class="mt-1 break-all text-ink">{{ result.integration_status.resolved_tools.route_plan || '???' }}</div></div>
-                  <div class="rounded-[18px] bg-white px-3 py-3 shadow-sm"><div class="text-xs text-slate-500">Weather</div><div class="mt-1 break-all text-ink">{{ result.integration_status.resolved_tools.weather || '???' }}</div></div>
+                  <div class="rounded-[18px] bg-white px-3 py-3 shadow-sm"><div class="text-xs text-slate-500">POI</div><div class="mt-1 break-all text-ink">{{ currentIntegrationStatus.resolved_tools.poi_search || '待匹配' }}</div></div>
+                  <div class="rounded-[18px] bg-white px-3 py-3 shadow-sm"><div class="text-xs text-slate-500">Route</div><div class="mt-1 break-all text-ink">{{ currentIntegrationStatus.resolved_tools.route_plan || '待匹配' }}</div></div>
+                  <div class="rounded-[18px] bg-white px-3 py-3 shadow-sm"><div class="text-xs text-slate-500">Weather</div><div class="mt-1 break-all text-ink">{{ currentIntegrationStatus.resolved_tools.weather || '待匹配' }}</div></div>
                 </div>
               </div>
-              <div v-if="result.integration_status.warnings.length || result.meta.warnings.length" class="rounded-[24px] border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-800">
-                <div class="font-medium">????</div>
+              <div v-if="combinedWarnings.length" class="rounded-[24px] border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-800">
+                <div class="font-medium">风险与提醒</div>
                 <div class="mt-3 space-y-2">
-                  <div v-for="warning in [...result.integration_status.warnings, ...result.meta.warnings]" :key="warning">{{ warning }}</div>
+                  <div v-for="warning in combinedWarnings" :key="warning">{{ warning }}</div>
                 </div>
               </div>
             </div>

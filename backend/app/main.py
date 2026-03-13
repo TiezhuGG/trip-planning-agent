@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 import sys
 
@@ -7,6 +8,12 @@ from fastapi.middleware.cors import CORSMiddleware
 if __package__ in {None, ""}:
     # Support `python main.py` from backend/app by exposing the backend root.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+if sys.platform == "win32":
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    except Exception:
+        pass
 
 from app.api.routes.health import router as health_router
 from app.api.routes.planning import router as planning_router
