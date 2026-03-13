@@ -110,6 +110,10 @@ function createEmptyIntegrationStatus(): IntegrationStatus {
     mcp_enabled: false,
     mcp_connected: false,
     mcp_command: '',
+    llm_enabled: false,
+    llm_reachable: false,
+    llm_model: '',
+    llm_base_url: '',
     available_tools: [],
     resolved_tools: {},
     missing_tools: [],
@@ -336,6 +340,9 @@ function routeModeLabel(mode: string) {
               <span class="rounded-full px-3 py-1" :class="currentIntegrationStatus.mcp_connected ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'">
                 {{ currentIntegrationStatus.mcp_connected ? 'MCP 已连接' : 'MCP 未连接' }}
               </span>
+              <span class="rounded-full px-3 py-1" :class="currentIntegrationStatus.llm_reachable ? 'bg-emerald-100 text-emerald-700' : currentIntegrationStatus.llm_enabled ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-700'">
+                {{ currentIntegrationStatus.llm_reachable ? 'LLM 可用' : currentIntegrationStatus.llm_enabled ? 'LLM 未连通' : 'LLM 未配置' }}
+              </span>
               <span class="rounded-full px-3 py-1" :class="currentIntegrationStatus.map_js_key_configured ? 'bg-sky-100 text-sky-700' : 'bg-slate-100 text-slate-700'">
                 {{ currentIntegrationStatus.map_js_key_configured ? 'JS Key 已配置' : 'JS Key 未配置' }}
               </span>
@@ -350,6 +357,13 @@ function routeModeLabel(mode: string) {
               <div class="text-xs text-slate-500">MCP 启动命令</div>
               <div class="mt-2 break-all rounded-[18px] bg-white px-3 py-2 text-xs text-ink shadow-sm">
                 {{ currentIntegrationStatus.mcp_command || '未配置' }}
+              </div>
+            </div>
+            <div class="mt-4 rounded-[22px] border border-slate-100 bg-panel px-4 py-4">
+              <div class="text-xs text-slate-500">LLM 配置</div>
+              <div class="mt-2 rounded-[18px] bg-white px-3 py-3 text-xs text-slate-600 shadow-sm">
+                <div class="font-medium text-ink">{{ currentIntegrationStatus.llm_model || '未配置模型名' }}</div>
+                <div class="mt-2 break-all">{{ currentIntegrationStatus.llm_base_url || '未配置 Base URL' }}</div>
               </div>
             </div>
             <div class="mt-4 rounded-[22px] border border-slate-100 bg-panel px-4 py-4">
@@ -425,6 +439,7 @@ function routeModeLabel(mode: string) {
             </div>
             <div class="flex flex-wrap gap-2 text-xs">
               <span class="rounded-full px-3 py-1" :class="currentIntegrationStatus.mcp_connected ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'">{{ currentIntegrationStatus.mcp_connected ? 'MCP 已连接' : 'MCP 未连接' }}</span>
+              <span class="rounded-full px-3 py-1" :class="currentIntegrationStatus.llm_reachable ? 'bg-emerald-100 text-emerald-700' : currentIntegrationStatus.llm_enabled ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-700'">{{ currentIntegrationStatus.llm_reachable ? 'LLM 可用' : currentIntegrationStatus.llm_enabled ? 'LLM 未连通' : 'LLM 未配置' }}</span>
               <span class="rounded-full px-3 py-1" :class="currentIntegrationStatus.map_js_key_configured ? 'bg-sky-100 text-sky-700' : 'bg-slate-100 text-slate-700'">{{ currentIntegrationStatus.map_js_key_configured ? 'JS Key 已配置' : 'JS Key 未配置' }}</span>
               <span class="rounded-full px-3 py-1" :class="currentIntegrationStatus.mock_enabled ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'">{{ currentIntegrationStatus.mock_enabled ? 'Mock 已开启' : 'Mock 已关闭' }}</span>
             </div>
@@ -433,6 +448,11 @@ function routeModeLabel(mode: string) {
             <div class="rounded-[24px] border border-slate-100 bg-panel px-4 py-4 text-sm text-slate-600">
               <div class="font-medium text-ink">MCP 启动命令</div>
               <div class="mt-2 break-all rounded-[18px] bg-white px-3 py-2 text-xs shadow-sm">{{ currentIntegrationStatus.mcp_command || '未配置' }}</div>
+              <div class="mt-4 font-medium text-ink">LLM 配置</div>
+              <div class="mt-2 rounded-[18px] bg-white px-3 py-3 text-xs shadow-sm">
+                <div class="font-medium text-ink">{{ currentIntegrationStatus.llm_model || '未配置模型名' }}</div>
+                <div class="mt-2 break-all text-slate-600">{{ currentIntegrationStatus.llm_base_url || '未配置 Base URL' }}</div>
+              </div>
               <div class="mt-4 font-medium text-ink">已探测工具列表</div>
               <div class="mt-3 flex flex-wrap gap-2">
                 <span v-for="tool in currentIntegrationStatus.available_tools" :key="tool" class="rounded-full bg-white px-3 py-1 text-xs shadow-sm">{{ tool }}</span>

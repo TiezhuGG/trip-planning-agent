@@ -198,6 +198,10 @@ export interface IntegrationStatus {
   mcp_enabled: boolean
   mcp_connected: boolean
   mcp_command: string
+  llm_enabled: boolean
+  llm_reachable: boolean
+  llm_model: string
+  llm_base_url: string
   available_tools: string[]
   resolved_tools: Record<string, string>
   missing_tools: string[]

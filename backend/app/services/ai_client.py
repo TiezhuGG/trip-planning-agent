@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
+import httpx
+
 from app.config import Settings
 from app.schemas.planning import (
     Activity,
@@ -45,15 +47,86 @@ class FinalPlanBuildResult:
     warnings: list[str]
 
 
+@dataclass
+class LLMDiagnosisResult:
+    enabled: bool
+    reachable: bool
+    model: str
+    base_url: str
+    warnings: list[str]
+
+
 class TravelAIClient:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.client = None
+        self.base_url = self._normalize_base_url(settings.openai_base_url)
         if settings.has_openai and AsyncOpenAI is not None:
-            kwargs: dict[str, Any] = {"api_key": settings.openai_api_key}
-            if settings.openai_base_url:
-                kwargs["base_url"] = settings.openai_base_url
+            timeout = httpx.Timeout(settings.openai_timeout_seconds, connect=min(15, settings.openai_timeout_seconds))
+            kwargs: dict[str, Any] = {
+                "api_key": settings.openai_api_key,
+                "max_retries": settings.openai_max_retries,
+                "http_client": httpx.AsyncClient(
+                    timeout=timeout,
+                    trust_env=settings.openai_trust_env,
+                ),
+            }
+            if self.base_url:
+                kwargs["base_url"] = self.base_url
             self.client = AsyncOpenAI(**kwargs)
+
+    async def diagnose(self, check_connection: bool = True) -> LLMDiagnosisResult:
+        if not self.settings.has_openai:
+            return LLMDiagnosisResult(
+                enabled=False,
+                reachable=False,
+                model=self.settings.openai_model,
+                base_url=self.base_url,
+                warnings=["未配置大模型 API Key 或模型名。"],
+            )
+
+        if self.client is None:
+            return LLMDiagnosisResult(
+                enabled=True,
+                reachable=False,
+                model=self.settings.openai_model,
+                base_url=self.base_url,
+                warnings=["OpenAI Python SDK 不可用，请检查依赖安装。"],
+            )
+
+        if not check_connection:
+            return LLMDiagnosisResult(
+                enabled=True,
+                reachable=False,
+                model=self.settings.openai_model,
+                base_url=self.base_url,
+                warnings=[],
+            )
+
+        try:
+            payload = await self._request_json_payload(
+                system_prompt="你是联调探针。请只返回 JSON。",
+                user_payload={"task": "ping", "response_schema_hint": {"status": "ok"}},
+                temperature=0,
+                max_tokens=32,
+            )
+            if str(payload.get("status", "")).lower() != "ok":
+                raise ValueError("模型未按约定返回诊断 JSON")
+            return LLMDiagnosisResult(
+                enabled=True,
+                reachable=True,
+                model=self.settings.openai_model,
+                base_url=self.base_url,
+                warnings=[],
+            )
+        except Exception as exc:
+            return LLMDiagnosisResult(
+                enabled=True,
+                reachable=False,
+                model=self.settings.openai_model,
+                base_url=self.base_url,
+                warnings=[f"大模型连通性检查失败: {exc}"],
+            )
 
     async def build_initial_plan(self, request: TripPlanningRequest) -> InitialPlanBuildResult:
         if self.client is not None:
@@ -69,7 +142,7 @@ class TravelAIClient:
                     draft=self._fallback_initial_plan(request),
                     used_llm=False,
                     fallback_used=True,
-                    warnings=[f"初步规划调用大模型失败，已回退到规则模板: {exc}"],
+                    warnings=[f"初步规划调用大模型失败，已回退到规则模板: {self._format_exception(exc)}"],
                 )
 
         return InitialPlanBuildResult(
@@ -99,7 +172,7 @@ class TravelAIClient:
                     plan=self._fallback_plan(request, initial_plan, context),
                     used_llm=False,
                     fallback_used=True,
-                    warnings=[f"最终行程汇总调用大模型失败，已回退到规则模板: {exc}"],
+                    warnings=[f"最终行程汇总调用大模型失败，已回退到规则模板: {self._format_exception(exc)}"],
                 )
 
         return FinalPlanBuildResult(
@@ -125,31 +198,17 @@ class TravelAIClient:
                 }
             ],
         }
-        completion = await self.client.chat.completions.create(
-            model=self.settings.openai_model,
-            response_format={"type": "json_object"},
+        payload = await self._request_json_payload(
+            system_prompt=(
+                "You are a travel-planning orchestrator. "
+                "Return JSON only. Keep all user-facing text natural Chinese."
+            ),
+            user_payload={
+                "request": request.model_dump(mode="json"),
+                "response_schema_hint": schema_hint,
+            },
             temperature=0.4,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "你是旅行规划的总控 Agent。请根据用户需求输出初步行程草案 JSON，只返回 JSON。",
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        {
-                            "request": request.model_dump(mode="json"),
-                            "response_schema_hint": schema_hint,
-                        },
-                        ensure_ascii=False,
-                    ),
-                },
-            ],
         )
-        content = completion.choices[0].message.content or "{}"
-        payload = extract_json_payload(content)
-        if not isinstance(payload, dict):
-            raise ValueError("Initial plan JSON invalid")
         return InitialPlanDraft.model_validate(payload)
 
     async def _compose_with_openai(
@@ -232,35 +291,97 @@ class TravelAIClient:
                 }
             ],
         }
-        completion = await self.client.chat.completions.create(
-            model=self.settings.openai_model,
-            response_format={"type": "json_object"},
+        payload = await self._request_json_payload(
+            system_prompt=(
+                "You are a senior trip planner. "
+                "Use the provided draft, map data, weather, and routes to produce the final plan. "
+                "Return JSON only and keep user-facing text natural Chinese."
+            ),
+            user_payload={
+                "request": request.model_dump(mode="json"),
+                "initial_plan": initial_plan.model_dump(mode="json"),
+                "planning_context": context.model_dump(mode="json"),
+                "tool_trace": [item.model_dump(mode="json") for item in tool_trace],
+                "response_schema_hint": schema_hint,
+            },
             temperature=0.7,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "你是资深旅游规划师。请严格基于初步计划、地图信息、天气和路线信息输出最终 JSON，只返回 JSON。",
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        {
-                            "request": request.model_dump(mode="json"),
-                            "initial_plan": initial_plan.model_dump(mode="json"),
-                            "planning_context": context.model_dump(mode="json"),
-                            "tool_trace": [item.model_dump(mode="json") for item in tool_trace],
-                            "response_schema_hint": schema_hint,
-                        },
-                        ensure_ascii=False,
-                    ),
-                },
-            ],
         )
-        content = completion.choices[0].message.content or "{}"
-        payload = extract_json_payload(content)
-        if not isinstance(payload, dict):
-            raise ValueError("Final plan JSON invalid")
         return TravelPlan.model_validate(payload)
+
+    async def _request_json_payload(
+        self,
+        system_prompt: str,
+        user_payload: dict[str, Any],
+        temperature: float,
+        max_tokens: int | None = None,
+    ) -> dict[str, Any]:
+        assert self.client is not None
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": json.dumps(user_payload, ensure_ascii=True)},
+        ]
+        errors: list[str] = []
+
+        for mode in ("json_object", "plain_text_json", "minimal"):
+            try:
+                request_kwargs: dict[str, Any] = {
+                    "model": self.settings.openai_model,
+                    "messages": messages,
+                }
+                if mode != "minimal":
+                    request_kwargs["temperature"] = temperature
+                if max_tokens is not None:
+                    request_kwargs["max_tokens"] = max_tokens
+                if mode == "json_object":
+                    request_kwargs["response_format"] = {"type": "json_object"}
+
+                completion = await self.client.chat.completions.create(**request_kwargs)
+                content = self._extract_message_content(completion)
+                payload = extract_json_payload(content)
+                if isinstance(payload, dict):
+                    return payload
+                errors.append(f"{mode}: 返回了不可解析的内容")
+            except Exception as exc:
+                errors.append(f"{mode}: {self._format_exception(exc)}")
+
+        raise ValueError("；".join(errors))
+
+    def _extract_message_content(self, completion: Any) -> str:
+        choices = getattr(completion, "choices", None) or []
+        if not choices:
+            return "{}"
+        message = getattr(choices[0], "message", None)
+        if message is None:
+            return "{}"
+        content = getattr(message, "content", "")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            fragments: list[str] = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    fragments.append(str(item.get("text", "")))
+            return "\n".join(fragment for fragment in fragments if fragment)
+        return str(content or "{}")
+
+    def _normalize_base_url(self, value: str) -> str:
+        normalized = value.strip().rstrip("/")
+        for suffix in ("/chat/completions", "/completions", "/responses"):
+            if normalized.lower().endswith(suffix):
+                normalized = normalized[: -len(suffix)]
+                break
+        return normalized
+
+    def _format_exception(self, exc: Exception) -> str:
+        parts = [f"{exc.__class__.__name__}: {exc}"] if str(exc) else [exc.__class__.__name__]
+        cause = exc.__cause__ or exc.__context__
+        if cause is not None and cause is not exc:
+            if str(cause):
+                parts.append(f"cause={cause.__class__.__name__}: {cause}")
+            else:
+                parts.append(f"cause={cause.__class__.__name__}")
+        return " | ".join(parts)
 
     def _fallback_initial_plan(self, request: TripPlanningRequest) -> InitialPlanDraft:
         interest_pool = request.interests or ["城市地标", "本地文化", "特色美食", "休闲漫游"]
@@ -339,9 +460,14 @@ class TravelAIClient:
                 )
 
             meals = self._build_meals(day_restaurants, food_cost)
+            route_tip = (
+                f"参考路线总时长约 {day_route.duration_text}。"
+                if day_route and day_route.duration_text
+                else "优先选择地铁与网约车组合，兼顾效率与舒适度。"
+            )
             transport_tips = [
                 f"天气：{day_weather.day_weather or context.weather.overview}，建议按当天实际温度调整出发时间。",
-                day_route.duration_text and f"参考路线总时长约 {day_route.duration_text}。" or "优先选择地铁与网约车组合，兼顾效率与舒适度。",
+                route_tip,
                 day_weather.advice or "午后注意补水，夜间备一件薄外套。",
             ]
 

@@ -17,6 +17,7 @@ from app.schemas.planning import (
     PlanningContext,
     PlanningResponse,
     TripPlanningRequest,
+    WeatherSummary,
 )
 from app.services.ai_client import TravelAIClient
 from app.services.amap_mcp_adapter import AmapMCPAdapter
@@ -36,7 +37,14 @@ class PlanningCoordinatorAgent:
         self.composer_agent = ItineraryComposerAgent(self.ai_client)
 
     async def diagnose(self) -> IntegrationStatus:
-        return await self.adapter.diagnose()
+        integration_status = await self.adapter.diagnose()
+        llm_status = await self.ai_client.diagnose(check_connection=True)
+        integration_status.llm_enabled = llm_status.enabled
+        integration_status.llm_reachable = llm_status.reachable
+        integration_status.llm_model = llm_status.model
+        integration_status.llm_base_url = llm_status.base_url
+        integration_status.warnings.extend(llm_status.warnings)
+        return integration_status
 
     async def generate(
         self, request: TripPlanningRequest, generated_at: datetime
@@ -44,6 +52,12 @@ class PlanningCoordinatorAgent:
         agent_trace: list[AgentExecution] = []
         warnings: list[str] = []
         integration_status = await self.adapter.diagnose()
+        llm_status = await self.ai_client.diagnose(check_connection=False)
+        integration_status.llm_enabled = llm_status.enabled
+        integration_status.llm_reachable = llm_status.reachable
+        integration_status.llm_model = llm_status.model
+        integration_status.llm_base_url = llm_status.base_url
+        integration_status.warnings.extend(llm_status.warnings)
         warnings.extend(integration_status.warnings)
 
         initial_plan, seed_trace = await self.seed_agent.gather(request)
@@ -79,42 +93,88 @@ class PlanningCoordinatorAgent:
             )
         else:
             tool_trace = []
-            attractions, restaurants = await self.sight_agent.gather(request, tool_trace)
-            hotels = await self.hotel_agent.gather(request, tool_trace)
-            weather = await self.weather_agent.gather(request, tool_trace)
             context = PlanningContext(
                 destination=request.destination,
-                attractions=attractions[:12],
-                restaurants=restaurants[:12],
-                hotels=hotels[:8],
+                attractions=[],
+                restaurants=[],
+                hotels=[],
                 routes=[],
-                weather=weather,
+                weather=WeatherSummary(),
             )
-            agent_trace.extend(
-                [
+            try:
+                attractions, restaurants = await self.sight_agent.gather(request, tool_trace)
+                context.attractions = attractions[:12]
+                context.restaurants = restaurants[:12]
+                agent_trace.append(
                     AgentExecution(
                         agent_name="poi_agent",
                         success=True,
                         summary=f"已获取 {len(context.attractions)} 个景点和 {len(context.restaurants)} 个餐饮候选。",
                         used_llm=False,
                         used_tools=[integration_status.resolved_tools.get("poi_search", self.adapter.settings.amap_mcp_tool_poi_search)],
-                    ),
+                    )
+                )
+            except Exception as exc:
+                warnings.append(f"poi_agent 调用失败: {exc}")
+                agent_trace.append(
+                    AgentExecution(
+                        agent_name="poi_agent",
+                        success=False,
+                        summary="景点与餐饮检索失败，已保留空结果继续生成行程。",
+                        used_llm=False,
+                        used_tools=[integration_status.resolved_tools.get("poi_search", self.adapter.settings.amap_mcp_tool_poi_search)],
+                        warnings=[str(exc)],
+                    )
+                )
+
+            try:
+                hotels = await self.hotel_agent.gather(request, tool_trace)
+                context.hotels = hotels[:8]
+                agent_trace.append(
                     AgentExecution(
                         agent_name="hotel_agent",
                         success=True,
                         summary=f"已获取 {len(context.hotels)} 个酒店候选。",
                         used_llm=False,
                         used_tools=[integration_status.resolved_tools.get("poi_search", self.adapter.settings.amap_mcp_tool_poi_search)],
-                    ),
+                    )
+                )
+            except Exception as exc:
+                warnings.append(f"hotel_agent 调用失败: {exc}")
+                agent_trace.append(
+                    AgentExecution(
+                        agent_name="hotel_agent",
+                        success=False,
+                        summary="酒店检索失败，已保留空结果继续生成行程。",
+                        used_llm=False,
+                        used_tools=[integration_status.resolved_tools.get("poi_search", self.adapter.settings.amap_mcp_tool_poi_search)],
+                        warnings=[str(exc)],
+                    )
+                )
+
+            try:
+                context.weather = await self.weather_agent.gather(request, tool_trace)
+                agent_trace.append(
                     AgentExecution(
                         agent_name="weather_agent",
                         success=True,
                         summary=f"已获取 {len(context.weather.daily_forecasts)} 天天气信息。",
                         used_llm=False,
                         used_tools=[integration_status.resolved_tools.get("weather", self.adapter.settings.amap_mcp_tool_weather)],
-                    ),
-                ]
-            )
+                    )
+                )
+            except Exception as exc:
+                warnings.append(f"weather_agent 调用失败: {exc}")
+                agent_trace.append(
+                    AgentExecution(
+                        agent_name="weather_agent",
+                        success=False,
+                        summary="天气检索失败，已保留空结果继续生成行程。",
+                        used_llm=False,
+                        used_tools=[integration_status.resolved_tools.get("weather", self.adapter.settings.amap_mcp_tool_weather)],
+                        warnings=[str(exc)],
+                    )
+                )
 
         day_restaurants = self.meal_agent.gather(request, initial_plan, context.restaurants)
         agent_trace.append(
@@ -150,6 +210,7 @@ class PlanningCoordinatorAgent:
 
         llm_used = seed_trace.used_llm or compose_llm_used
         fallback_used = bool(seed_trace.warnings or compose_fallback_used)
+        integration_status.llm_reachable = integration_status.llm_reachable or llm_used
 
         return PlanningResponse(
             generated_at=generated_at,

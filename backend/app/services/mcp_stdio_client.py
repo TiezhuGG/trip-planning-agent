@@ -18,11 +18,13 @@ class MCPStdioClient:
         args: list[str] | None = None,
         env: dict[str, str] | None = None,
         timeout_seconds: int = 20,
+        inherit_proxy_env: bool = False,
     ) -> None:
         self.command = command
         self.args = args or []
         self.env = env or {}
         self.timeout_seconds = timeout_seconds
+        self.inherit_proxy_env = inherit_proxy_env
         self.resolved_command = command
         self.stderr_tail: list[str] = []
 
@@ -61,13 +63,13 @@ class MCPStdioClient:
             raise MCPProtocolError(
                 "当前后端运行在 WindowsSelectorEventLoopPolicy 下，无法使用 stdio MCP 子进程。"
                 "这通常是因为使用了 uvicorn --reload。"
-                "请改用不带 --reload 的启动方式，或改造为独立的 HTTP/SSE MCP 服务。"
+                "请改用不带 --reload 的启动方式，或改造成独立的 HTTP/SSE MCP 服务。"
             )
 
         server_params = StdioServerParameters(
             command=self.resolved_command,
             args=self.args,
-            env={**os.environ, **self.env} if self.env else dict(os.environ),
+            env=self._build_process_env(),
         )
 
         try:
@@ -76,7 +78,7 @@ class MCPStdioClient:
                     await session.initialize()
                     return await operation(session)
         except Exception as exc:
-            raise MCPProtocolError(f"MCP SDK 调用失败: {exc.__class__.__name__}: {exc}") from exc
+            raise MCPProtocolError(f"MCP SDK 调用失败: {self._format_exception(exc)}") from exc
 
     async def _list_tools_once(self, session) -> dict[str, Any]:
         response = await session.list_tools()
@@ -149,7 +151,7 @@ class MCPStdioClient:
         if command_path.is_absolute() and command_path.exists():
             return str(command_path)
 
-        if command_path.parent != Path('.') and command_path.exists():
+        if command_path.parent != Path(".") and command_path.exists():
             return str(command_path.resolve())
 
         resolved = shutil.which(command)
@@ -181,3 +183,38 @@ class MCPStdioClient:
                 return str(candidate)
 
         return command
+
+    def _build_process_env(self) -> dict[str, str]:
+        env = dict(os.environ)
+        if not self.inherit_proxy_env:
+            for key in (
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "ALL_PROXY",
+                "http_proxy",
+                "https_proxy",
+                "all_proxy",
+            ):
+                env.pop(key, None)
+            no_proxy_hosts = ["127.0.0.1", "localhost", "restapi.amap.com", "api-inference.modelscope.cn"]
+            env["NO_PROXY"] = ",".join(no_proxy_hosts)
+            env["no_proxy"] = env["NO_PROXY"]
+
+        env.update(self.env)
+        return env
+
+    def _format_exception(self, exc: Exception) -> str:
+        if hasattr(exc, "exceptions") and isinstance(getattr(exc, "exceptions"), tuple):
+            children = [
+                self._format_exception(child)
+                for child in getattr(exc, "exceptions")
+                if isinstance(child, Exception)
+            ]
+            child_text = " | ".join(children)
+            return f"{exc.__class__.__name__}: {exc}" + (f" -> {child_text}" if child_text else "")
+
+        base = f"{exc.__class__.__name__}: {exc}" if str(exc) else exc.__class__.__name__
+        cause = exc.__cause__ or exc.__context__
+        if isinstance(cause, Exception) and cause is not exc:
+            return f"{base} -> {self._format_exception(cause)}"
+        return base

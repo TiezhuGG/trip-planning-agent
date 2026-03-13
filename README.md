@@ -38,8 +38,14 @@ cd backend
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --port 8000
 ```
+
+Windows + MCP 联调说明：
+
+- 真实高德 MCP `stdio` 模式下，不要使用 `uvicorn --reload`，否则在 Windows 上会切到不支持 MCP 子进程的事件循环策略。
+- 推荐直接运行 `python -m uvicorn app.main:app`。
+- 如果用 PowerShell 调试 `/api/v1/plans/generate`，请使用 [backend/scripts/test_generate_utf8.ps1](C:/Users/FFF/Desktop/trip-planning-agent/backend/scripts/test_generate_utf8.ps1) 或先切换控制台为 UTF-8，否则中文请求和响应会显示为乱码。
 
 ### 前端
 

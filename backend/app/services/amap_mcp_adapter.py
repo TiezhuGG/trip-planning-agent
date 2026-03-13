@@ -4,6 +4,8 @@ import asyncio
 from datetime import timedelta
 from typing import Any
 
+import httpx
+
 from app.config import Settings
 from app.schemas.planning import (
     DailyForecast,
@@ -30,6 +32,7 @@ class AmapMCPAdapter:
                 args=settings.amap_mcp_args,
                 env=settings.amap_mcp_env,
                 timeout_seconds=settings.amap_mcp_timeout_seconds,
+                inherit_proxy_env=settings.amap_mcp_inherit_proxy_env,
             )
             if settings.has_mcp
             else None
@@ -128,38 +131,50 @@ class AmapMCPAdapter:
     async def fetch_attractions(
         self, request: TripPlanningRequest, trace: list[ToolCallRecord]
     ) -> list[POIRecommendation]:
-        queries = [f"{request.destination} 热门景点"]
-        queries.extend(f"{request.destination} {keyword}" for keyword in request.must_visit[:4])
-        pois: list[POIRecommendation] = []
-        for query in queries:
-            raw = await self._call_tool_for_purpose(
-                "poi_search",
-                self._build_poi_search_arguments(request.destination, query),
-                trace,
-            )
-            pois.extend(self._normalize_pois(raw, fallback_kind="景点"))
-        return self._merge_unique_pois(pois)
+        queries: list[str] = []
+        for keyword in request.must_visit[:4]:
+            queries.extend([keyword, f"{keyword} 景点"])
+        for interest in request.interests[:3]:
+            queries.append(f"{interest} 景点")
+        queries.extend(["旅游景点", "热门景点", "景区"])
+        merged = await self._search_poi_candidates(
+            city=request.destination,
+            queries=queries,
+            trace=trace,
+            fallback_kind="景点",
+            target_count=10,
+        )
+        return await self._enrich_pois_with_details(merged, trace)
 
     async def fetch_restaurants(
         self, request: TripPlanningRequest, trace: list[ToolCallRecord]
     ) -> list[POIRecommendation]:
-        preference = request.dining_preferences[0] if request.dining_preferences else "特色餐厅"
-        raw = await self._call_tool_for_purpose(
-            "poi_search",
-            self._build_poi_search_arguments(request.destination, f"{request.destination} {preference}"),
-            trace,
+        queries: list[str] = []
+        for preference in request.dining_preferences[:3]:
+            queries.extend([preference, f"{preference} 餐厅"])
+        queries.extend(["本地美食", "特色餐厅", "热门餐厅"])
+        merged = await self._search_poi_candidates(
+            city=request.destination,
+            queries=queries,
+            trace=trace,
+            fallback_kind="餐厅",
+            target_count=8,
         )
-        return self._normalize_pois(raw, fallback_kind="餐厅")
+        return await self._enrich_pois_with_details(merged, trace)
 
     async def fetch_hotels(
         self, request: TripPlanningRequest, trace: list[ToolCallRecord]
     ) -> list[POIRecommendation]:
-        raw = await self._call_tool_for_purpose(
-            "poi_search",
-            self._build_poi_search_arguments(request.destination, f"{request.destination} {request.hotel_style}"),
-            trace,
+        queries = [request.hotel_style, "酒店", "舒适型酒店", "热门酒店"]
+        merged = await self._search_poi_candidates(
+            city=request.destination,
+            queries=queries,
+            trace=trace,
+            fallback_kind="酒店",
+            target_count=6,
         )
-        return self._normalize_pois(raw, fallback_kind="酒店")
+        enriched = await self._enrich_pois_with_details(merged, trace)
+        return self._sort_pois_by_city_center(request.destination, enriched)
 
     async def fetch_weather(
         self, request: TripPlanningRequest, trace: list[ToolCallRecord]
@@ -183,14 +198,122 @@ class AmapMCPAdapter:
         if self.client is None:
             return self._mock_route(day_number, origin, destination, waypoints, mode)
 
-        tool_name = self._resolve_route_tool_name(mode)
-        raw = await self._call_tool_for_purpose(
-            "route_plan",
-            self._build_route_arguments(origin, destination),
-            trace,
-            tool_name_override=tool_name,
+        attempted_modes: list[str] = []
+        errors: list[str] = []
+        for candidate_mode in self._route_mode_candidates(mode):
+            attempted_modes.append(candidate_mode)
+            if candidate_mode == "transit":
+                try:
+                    raw = await self._plan_transit_via_web_service(origin, destination, trace)
+                    return self._normalize_route(raw, day_number, origin, destination, waypoints, candidate_mode)
+                except Exception as exc:
+                    errors.append(f"{candidate_mode}_webservice: {exc}")
+
+            tool_name = self._resolve_route_tool_name(candidate_mode)
+            try:
+                raw = await self._call_tool_for_purpose(
+                    "route_plan",
+                    self._build_route_arguments(origin, destination),
+                    trace,
+                    tool_name_override=tool_name,
+                )
+                return self._normalize_route(raw, day_number, origin, destination, waypoints, candidate_mode)
+            except Exception as exc:
+                errors.append(f"{candidate_mode}: {exc}")
+
+        raise MCPProtocolError(
+            f"路线规划失败，已尝试 {', '.join(attempted_modes)}；错误: {'；'.join(errors)}"
         )
-        return self._normalize_route(raw, day_number, origin, destination, waypoints, mode)
+
+    async def _plan_transit_via_web_service(
+        self,
+        origin: POIRecommendation,
+        destination: POIRecommendation,
+        trace: list[ToolCallRecord],
+    ) -> dict[str, Any]:
+        api_key = self._amap_web_service_key()
+        if not api_key:
+            raise MCPProtocolError("未配置高德 Web Service Key，无法走公交路线直连兜底。")
+
+        origin_location = await self._resolve_route_location(origin)
+        destination_location = await self._resolve_route_location(destination)
+        origin_city = self._normalize_city_name(origin.district)
+        destination_city = self._normalize_city_name(destination.district)
+        arguments = {
+            "origin": origin_location,
+            "destination": destination_location,
+            "city": origin_city,
+            "cityd": destination_city,
+        }
+
+        async with httpx.AsyncClient(timeout=20, trust_env=False) as client:
+            response = await client.get(
+                "https://restapi.amap.com/v3/direction/transit/integrated",
+                params={
+                    "key": api_key,
+                    **arguments,
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+
+        if str(payload.get("status", "")) != "1":
+            raise MCPProtocolError(
+                f"高德公交 Web Service 返回错误: {payload.get('info') or payload.get('infocode') or payload}"
+            )
+        route = payload.get("route")
+        if not isinstance(route, dict) or not isinstance(route.get("transits"), list) or not route.get("transits"):
+            raise MCPProtocolError("高德公交 Web Service 未返回可用 transit 方案。")
+
+        normalized_payload = {
+            "route": {
+                "origin": route.get("origin", origin_location),
+                "destination": route.get("destination", destination_location),
+                "distance": route.get("distance", route.get("taxi_cost", "")),
+                "transits": route.get("transits", []),
+            }
+        }
+        trace.append(
+            ToolCallRecord(
+                tool_name="amap_webservice_transit_integrated",
+                arguments=arguments,
+                success=True,
+                summary=f"工具调用成功 (route_plan) {self._summarize_tool_payload(normalized_payload)}",
+            )
+        )
+        return normalized_payload
+
+    async def _resolve_route_location(self, poi: POIRecommendation) -> str:
+        if poi.longitude is not None and poi.latitude is not None:
+            return f"{poi.longitude},{poi.latitude}"
+
+        api_key = self._amap_web_service_key()
+        if not api_key:
+            raise MCPProtocolError("缺少高德 Web Service Key，无法为路线规划补做 geocode。")
+
+        async with httpx.AsyncClient(timeout=15, trust_env=False) as client:
+            response = await client.get(
+                "https://restapi.amap.com/v3/geocode/geo",
+                params={
+                    "key": api_key,
+                    "address": self._route_address(poi),
+                    "city": self._normalize_city_name(poi.district),
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+
+        if str(payload.get("status", "")) != "1":
+            raise MCPProtocolError(
+                f"高德 geocode 返回错误: {payload.get('info') or payload.get('infocode') or payload}"
+            )
+        geocodes = payload.get("geocodes")
+        if not isinstance(geocodes, list) or not geocodes or not geocodes[0].get("location"):
+            raise MCPProtocolError(f"未能为地址解析坐标: {self._route_address(poi)}")
+        return str(geocodes[0]["location"])
+
+    def _amap_web_service_key(self) -> str:
+        return str(self.settings.amap_mcp_env.get("AMAP_MAPS_API_KEY", "")).strip()
 
     async def _call_tool_for_purpose(
         self,
@@ -216,12 +339,13 @@ class AmapMCPAdapter:
                 timeout=self.settings.amap_mcp_timeout_seconds + 2,
             )
             normalized = self._unwrap_tool_result(result)
+            self._raise_on_tool_error(normalized, tool_name)
             trace.append(
                 ToolCallRecord(
                     tool_name=tool_name,
                     arguments=arguments,
                     success=True,
-                    summary=f"工具调用成功 ({purpose})",
+                    summary=f"工具调用成功 ({purpose}) {self._summarize_tool_payload(normalized)}",
                 )
             )
             return normalized
@@ -308,6 +432,57 @@ class AmapMCPAdapter:
             "weather": ["weather", "forecast", "climate"],
         }[purpose]
 
+    def _resolve_search_detail_tool_name(self) -> str | None:
+        catalog = self._tool_catalog or []
+        available = [str(item.get("name", "")) for item in catalog if item.get("name")]
+        if "maps_search_detail" in available:
+            return "maps_search_detail"
+
+        best_name = ""
+        best_score = -1
+        for item in catalog:
+            name = str(item.get("name", ""))
+            description = str(item.get("description", ""))
+            text = f"{name} {description}".lower()
+            score = sum(1 for keyword in ["detail", "poi", "search"] if keyword in text)
+            if score > best_score:
+                best_score = score
+                best_name = name
+
+        return best_name if best_name and best_score > 0 else None
+
+    async def _enrich_pois_with_details(
+        self,
+        pois: list[POIRecommendation],
+        trace: list[ToolCallRecord],
+    ) -> list[POIRecommendation]:
+        if self.client is None or not pois:
+            return pois
+
+        detail_tool_name = self._resolve_search_detail_tool_name()
+        if not detail_tool_name:
+            return pois
+
+        enriched: list[POIRecommendation] = []
+        for poi in pois[:12]:
+            if not poi.poi_id:
+                enriched.append(poi)
+                continue
+
+            try:
+                raw = await self._call_tool_for_purpose(
+                    "poi_search",
+                    {"id": poi.poi_id},
+                    trace,
+                    tool_name_override=detail_tool_name,
+                )
+                detail_poi = self._normalize_poi_detail(raw, poi)
+                enriched.append(detail_poi)
+            except Exception:
+                enriched.append(poi)
+
+        return enriched
+
     def _resolve_route_tool_name(self, mode: str) -> str | None:
         catalog = self._tool_catalog or []
         available = [str(item.get("name", "")) for item in catalog if item.get("name")]
@@ -315,7 +490,7 @@ class AmapMCPAdapter:
             "driving": "maps_direction_driving_by_address",
             "transit": "maps_direction_transit_integrated_by_address",
             "walking": "maps_direction_walking_by_address",
-            "bicycling": "maps_direction_bicycling_by_address",
+            "bicycling": "maps_bicycling_by_address",
         }.get(mode, self.settings.amap_mcp_tool_route_plan)
 
         if preferred in available:
@@ -344,12 +519,64 @@ class AmapMCPAdapter:
 
         return self._resolve_tool_name("route_plan", strict=False)
 
-    def _build_poi_search_arguments(self, city: str, keywords: str) -> dict[str, Any]:
+    def _route_mode_candidates(self, preferred_mode: str) -> list[str]:
+        candidates = {
+            "transit": ["transit", "walking", "driving"],
+            "walking": ["walking", "transit", "driving"],
+            "bicycling": ["bicycling", "walking", "driving"],
+            "driving": ["driving", "walking"],
+        }.get(preferred_mode, [preferred_mode, "walking", "driving"])
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for mode in candidates:
+            if mode in seen:
+                continue
+            seen.add(mode)
+            ordered.append(mode)
+        return ordered
+
+    async def _search_poi_candidates(
+        self,
+        city: str,
+        queries: list[str],
+        trace: list[ToolCallRecord],
+        fallback_kind: str,
+        target_count: int,
+    ) -> list[POIRecommendation]:
+        pois: list[POIRecommendation] = []
+        deduped_queries = self._dedupe_queries(queries)
+        for citylimit in ("true", "false"):
+            for query in deduped_queries:
+                raw = await self._call_tool_for_purpose(
+                    "poi_search",
+                    self._build_poi_search_arguments(city, query, citylimit=citylimit),
+                    trace,
+                )
+                pois.extend(self._normalize_pois(raw, fallback_kind=fallback_kind))
+                merged = self._merge_unique_pois(pois)
+                if len(merged) >= target_count:
+                    return merged
+            if pois:
+                return self._merge_unique_pois(pois)
+        return self._merge_unique_pois(pois)
+
+    def _build_poi_search_arguments(self, city: str, keywords: str, citylimit: str = "true") -> dict[str, Any]:
         return {
             "keywords": keywords,
             "city": city,
-            "city_limit": True,
+            "citylimit": citylimit,
         }
+
+    def _dedupe_queries(self, queries: list[str]) -> list[str]:
+        seen: set[str] = set()
+        cleaned: list[str] = []
+        for query in queries:
+            normalized = query.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            cleaned.append(normalized)
+        return cleaned
 
     def _build_route_arguments(
         self,
@@ -357,11 +584,21 @@ class AmapMCPAdapter:
         destination: POIRecommendation,
     ) -> dict[str, Any]:
         return {
-            "origin": self._route_address(origin),
-            "destination": self._route_address(destination),
-            "city": origin.district or origin.address or origin.name,
-            "cityd": destination.district or destination.address or destination.name,
+            "origin_address": self._route_address(origin),
+            "destination_address": self._route_address(destination),
+            "origin_city": self._normalize_city_name(origin.district),
+            "destination_city": self._normalize_city_name(destination.district),
         }
+
+    def _normalize_city_name(self, value: str | None) -> str:
+        if not value:
+            return ""
+        normalized = value.strip()
+        for suffix in ("市", "区", "县"):
+            if normalized.endswith(suffix) and len(normalized) > 1:
+                normalized = normalized[:-1]
+                break
+        return normalized
 
     def _format_connection_error(self, exc: Exception) -> str:
         detail = f"{exc.__class__.__name__}: {exc}" if str(exc) else exc.__class__.__name__
@@ -394,13 +631,29 @@ class AmapMCPAdapter:
             return content
         return result
 
+    def _raise_on_tool_error(self, payload: Any, tool_name: str) -> None:
+        if not isinstance(payload, dict):
+            return
+        error = payload.get("error")
+        if error:
+            raise MCPProtocolError(f"{tool_name} 返回错误: {error}")
+        if payload.get("isError"):
+            raise MCPProtocolError(f"{tool_name} 调用被标记为 isError")
+
+    def _summarize_tool_payload(self, payload: Any) -> str:
+        if isinstance(payload, dict):
+            for key in ("pois", "results", "forecasts", "casts", "return"):
+                value = payload.get(key)
+                if isinstance(value, list):
+                    return f"(返回 {len(value)} 项)"
+            keys = ", ".join(list(payload.keys())[:4])
+            return f"(keys: {keys})" if keys else ""
+        if isinstance(payload, list):
+            return f"(返回 {len(payload)} 项)"
+        return ""
+
     def _normalize_pois(self, raw: Any, fallback_kind: str) -> list[POIRecommendation]:
-        data = raw
-        if isinstance(raw, dict):
-            for key in ("pois", "items", "data", "results", "list"):
-                if key in raw and isinstance(raw[key], list):
-                    data = raw[key]
-                    break
+        data = self._extract_poi_items(raw)
         if not isinstance(data, list):
             return []
 
@@ -427,6 +680,58 @@ class AmapMCPAdapter:
                 )
             )
         return pois
+
+    def _normalize_poi_detail(self, raw: Any, fallback: POIRecommendation) -> POIRecommendation:
+        detail = self._extract_poi_detail_record(raw)
+        if not isinstance(detail, dict):
+            return fallback
+
+        longitude, latitude = self._extract_coordinates(detail)
+        merged_tags = fallback.tags or self._normalize_tags(detail)
+        return POIRecommendation(
+            name=str(detail.get("name", fallback.name)),
+            poi_id=str(detail.get("id", fallback.poi_id or "")) or None,
+            address=str(detail.get("address", fallback.address)),
+            tags=merged_tags,
+            rating=self._to_float(detail.get("rating", fallback.rating)),
+            recommended_duration_minutes=fallback.recommended_duration_minutes,
+            opening_hours=str(detail.get("opening_hours", detail.get("business_hours", fallback.opening_hours or ""))) or fallback.opening_hours,
+            district=str(detail.get("district", detail.get("adname", detail.get("city", fallback.district or "")))) or fallback.district,
+            longitude=longitude if longitude is not None else fallback.longitude,
+            latitude=latitude if latitude is not None else fallback.latitude,
+            source=fallback.source,
+        )
+
+    def _extract_poi_items(self, raw: Any) -> list[dict[str, Any]]:
+        if isinstance(raw, list):
+            return [item for item in raw if isinstance(item, dict)]
+
+        if not isinstance(raw, dict):
+            return []
+
+        for key in ("pois", "items", "results", "list"):
+            value = raw.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+
+        data = raw.get("data")
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        if isinstance(data, dict):
+            nested_items = self._extract_poi_items(data)
+            if nested_items:
+                return nested_items
+
+        if any(key in raw for key in ("name", "id", "address", "location")):
+            return [raw]
+
+        return []
+
+    def _extract_poi_detail_record(self, raw: Any) -> dict[str, Any] | None:
+        items = self._extract_poi_items(raw)
+        if items:
+            return items[0]
+        return raw if isinstance(raw, dict) else None
 
     def _normalize_weather(self, raw: Any, request: TripPlanningRequest) -> WeatherSummary:
         forecasts: list[DailyForecast] = []
@@ -515,11 +820,14 @@ class AmapMCPAdapter:
         waypoints: list[POIRecommendation],
         mode: str,
     ) -> RouteSummary:
+        route_root = raw.get("route") if isinstance(raw, dict) and isinstance(raw.get("route"), dict) else None
         route_data = raw
-        if isinstance(raw, dict) and isinstance(raw.get("route"), dict):
-            route_data = raw["route"]
+        if route_root is not None:
+            route_data = route_root
         if isinstance(route_data, dict) and isinstance(route_data.get("paths"), list) and route_data["paths"]:
             route_data = route_data["paths"][0]
+        elif isinstance(route_data, dict) and isinstance(route_data.get("transits"), list) and route_data["transits"]:
+            route_data = route_data["transits"][0]
 
         distance_text = ""
         duration_text = ""
@@ -529,6 +837,11 @@ class AmapMCPAdapter:
         if isinstance(route_data, dict):
             distance_text = str(route_data.get("distance_text", route_data.get("distance", "")))
             duration_text = str(route_data.get("duration_text", route_data.get("duration", "")))
+            if route_root is not None:
+                if not distance_text:
+                    distance_text = str(route_root.get("distance", route_root.get("walking_distance", "")))
+                if not duration_text:
+                    duration_text = str(route_root.get("duration", ""))
             raw_steps = route_data.get("steps", [])
             if isinstance(raw_steps, list):
                 for item in raw_steps[:8]:
@@ -542,9 +855,53 @@ class AmapMCPAdapter:
                         )
                     )
                     polyline.extend(self._extract_polyline_points(item.get("polyline")))
+                    tmcs = item.get("tmcs")
+                    if isinstance(tmcs, list):
+                        for tmc in tmcs:
+                            if isinstance(tmc, dict):
+                                polyline.extend(self._extract_polyline_points(tmc.get("polyline")))
 
             if not polyline:
                 polyline.extend(self._extract_polyline_points(route_data.get("polyline")))
+
+            raw_segments = route_data.get("segments", [])
+            if isinstance(raw_segments, list) and raw_segments:
+                for segment in raw_segments:
+                    if not isinstance(segment, dict):
+                        continue
+                    walking = segment.get("walking")
+                    if isinstance(walking, dict):
+                        for step in walking.get("steps", []) if isinstance(walking.get("steps"), list) else []:
+                            if not isinstance(step, dict):
+                                continue
+                            steps.append(
+                                RouteStep(
+                                    instruction=str(step.get("instruction", "步行前往下一站")),
+                                    distance_text=str(step.get("distance", "")),
+                                    duration_text=str(step.get("duration", "")),
+                                )
+                            )
+                    bus = segment.get("bus")
+                    if isinstance(bus, dict):
+                        buslines = bus.get("buslines", [])
+                        if isinstance(buslines, list):
+                            for busline in buslines[:2]:
+                                if not isinstance(busline, dict):
+                                    continue
+                                instruction = f"乘坐 {busline.get('name', '公共交通')}"
+                                dep = busline.get("departure_stop")
+                                arr = busline.get("arrival_stop")
+                                if isinstance(dep, dict) and dep.get("name"):
+                                    instruction += f"，从 {dep['name']} 上车"
+                                if isinstance(arr, dict) and arr.get("name"):
+                                    instruction += f"，到 {arr['name']} 下车"
+                                steps.append(
+                                    RouteStep(
+                                        instruction=instruction,
+                                        distance_text=str(busline.get("distance", "")),
+                                        duration_text=str(busline.get("duration", "")),
+                                    )
+                                )
 
         if not polyline:
             polyline = self._fallback_polyline(origin, destination, waypoints)
@@ -557,8 +914,8 @@ class AmapMCPAdapter:
             from_name=origin.name,
             to_name=destination.name,
             waypoints=waypoint_names,
-            distance_text=distance_text or "待工具返回",
-            duration_text=duration_text or "待工具返回",
+            distance_text=self._format_distance_text(distance_text) or "待工具返回",
+            duration_text=self._format_duration_text(duration_text) or "待工具返回",
             mode=mode,
             steps=steps,
             polyline=polyline,
@@ -715,8 +1072,20 @@ class AmapMCPAdapter:
             merged.append(poi)
         return merged
 
+    def _sort_pois_by_city_center(self, city: str, pois: list[POIRecommendation]) -> list[POIRecommendation]:
+        center = self._city_center(city)
+        return sorted(
+            pois,
+            key=lambda poi: self._distance_score(poi, center),
+        )
+
+    def _distance_score(self, poi: POIRecommendation, center: GeoPoint) -> float:
+        if poi.longitude is None or poi.latitude is None:
+            return float("inf")
+        return (poi.longitude - center.longitude) ** 2 + (poi.latitude - center.latitude) ** 2
+
     def _normalize_tags(self, item: dict[str, Any]) -> list[str]:
-        tags = item.get("tags", item.get("tag", item.get("type", [])))
+        tags = item.get("tags", item.get("tag", item.get("type", item.get("typecode", []))))
         if isinstance(tags, str):
             return [segment.strip() for segment in tags.replace("|", ",").split(",") if segment.strip()]
         if isinstance(tags, list):
@@ -804,3 +1173,28 @@ class AmapMCPAdapter:
             return int(float(value))
         except (TypeError, ValueError):
             return None
+
+    def _format_distance_text(self, value: str) -> str:
+        raw = value.strip()
+        if not raw:
+            return ""
+        meters = self._to_int(raw)
+        if meters is None:
+            return raw
+        if meters >= 1000:
+            return f"{meters / 1000:.1f}公里"
+        return f"{meters}米"
+
+    def _format_duration_text(self, value: str) -> str:
+        raw = value.strip()
+        if not raw:
+            return ""
+        seconds = self._to_int(raw)
+        if seconds is None:
+            return raw
+        if seconds >= 3600:
+            hours = seconds // 3600
+            minutes = (seconds % 3600) // 60
+            return f"{hours}小时{minutes}分钟" if minutes else f"{hours}小时"
+        minutes = max(1, round(seconds / 60))
+        return f"{minutes}分钟"

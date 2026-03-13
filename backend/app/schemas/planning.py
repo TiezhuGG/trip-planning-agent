@@ -201,6 +201,10 @@ class IntegrationStatus(BaseModel):
     mcp_enabled: bool = False
     mcp_connected: bool = False
     mcp_command: str = ""
+    llm_enabled: bool = False
+    llm_reachable: bool = False
+    llm_model: str = ""
+    llm_base_url: str = ""
     available_tools: list[str] = Field(default_factory=list)
     resolved_tools: dict[str, str] = Field(default_factory=dict)
     missing_tools: list[str] = Field(default_factory=list)

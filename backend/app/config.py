@@ -12,12 +12,16 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_base_url: str = ""
     openai_model: str = ""
+    openai_timeout_seconds: int = 60
+    openai_max_retries: int = 1
+    openai_trust_env: bool = False
 
     amap_api_key: str = ""
     amap_security_js_code: str = ""
     amap_mcp_command: str = ""
     amap_mcp_args: list[str] = Field(default_factory=list)
     amap_mcp_env: dict[str, str] = Field(default_factory=dict)
+    amap_mcp_inherit_proxy_env: bool = False
     amap_mcp_tool_poi_search: str = "maps_text_search"
     amap_mcp_tool_route_plan: str = "maps_direction_driving_by_address"
     amap_mcp_tool_weather: str = "maps_weather"
