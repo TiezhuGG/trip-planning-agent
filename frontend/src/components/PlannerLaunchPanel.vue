@@ -6,7 +6,6 @@ withDefaults(
     progressLabel: string;
     loading: boolean;
     canSubmit: boolean;
-    errorMessage: string;
     compact?: boolean;
   }>(),
   {
@@ -68,13 +67,6 @@ const emit = defineEmits<{
           {{ loading ? "规划中..." : "开始规划" }}
         </button>
       </div>
-    </div>
-
-    <div
-      v-if="errorMessage"
-      class="mt-5 rounded-[22px] border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700"
-    >
-      {{ errorMessage }}
     </div>
   </article>
 </template>

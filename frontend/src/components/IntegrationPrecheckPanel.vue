@@ -4,7 +4,6 @@ import type { IntegrationStatus } from "../types/planning";
 defineProps<{
   integrationStatus: IntegrationStatus;
   integrationLoading: boolean;
-  warnings: string[];
 }>();
 
 const emit = defineEmits<{
@@ -58,15 +57,6 @@ const emit = defineEmits<{
         <div class="mt-2 font-medium text-ink">
           {{ integrationStatus.mock_enabled ? "已开启" : "已关闭" }}
         </div>
-      </div>
-    </div>
-
-    <div
-      v-if="warnings.length"
-      class="mt-4 rounded-[22px] border border-amber-200 bg-amber-50 px-4 py-4 text-xs leading-6 text-amber-800"
-    >
-      <div v-for="warning in warnings" :key="warning">
-        {{ warning }}
       </div>
     </div>
   </article>

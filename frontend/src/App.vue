@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
@@ -9,6 +9,7 @@ import AmapMap from "./components/AmapMap.vue";
 import DailyItinerarySection from "./components/DailyItinerarySection.vue";
 import LandingHero from "./components/LandingHero.vue";
 import IntegrationPrecheckPanel from "./components/IntegrationPrecheckPanel.vue";
+import NotificationModal from "./components/NotificationModal.vue";
 import PlannerLaunchPanel from "./components/PlannerLaunchPanel.vue";
 import ResultSidebar from "./components/ResultSidebar.vue";
 import TravelTonePanel from "./components/TravelTonePanel.vue";
@@ -77,7 +78,6 @@ const diningText = ref(form.dining_preferences.join("、"));
 const loading = ref(false);
 const progress = ref(0);
 const progressLabel = ref(stageOptions[0]);
-const errorMessage = ref("");
 const result = ref<PlanningResponse | null>(null);
 const exportRoot = ref<HTMLElement | null>(null);
 const integrationStatus = ref<IntegrationStatus>(
@@ -86,15 +86,18 @@ const integrationStatus = ref<IntegrationStatus>(
 const integrationLoading = ref(false);
 const integrationError = ref("");
 const expandedDays = ref<number[]>([]);
+const noticeModal = reactive({
+  open: false,
+  tone: "warning" as "success" | "warning" | "error",
+  title: "",
+  messages: [] as string[],
+});
 let progressTimer: number | null = null;
 
 const currentIntegrationStatus = computed(
   () => result.value?.integration_status ?? integrationStatus.value,
 );
 const travelerSummary = computed(() => formatTravelers(form.travelers));
-const resultWarnings = computed(
-  () => result.value?.meta.warnings.filter(Boolean) ?? [],
-);
 const budgetCards = computed<Array<[string, string]>>(() => {
   const budget = result.value?.plan.estimated_budget;
   return budget
@@ -125,12 +128,6 @@ const summaryTags = computed(() =>
     ]),
   ].slice(0, 5),
 );
-const combinedWarnings = computed(() => [
-  ...new Set([
-    ...currentIntegrationStatus.value.warnings.filter(Boolean),
-    ...(integrationError.value ? [integrationError.value] : []),
-  ]),
-]);
 
 watch([startDate, endDate], ([start, end]) => {
   if (!start) return;
@@ -158,6 +155,79 @@ watch(
 onMounted(() => {
   if (showDevPanels) void loadIntegrationStatus();
 });
+
+function openNotice(
+  tone: "success" | "warning" | "error",
+  title: string,
+  messages: string[],
+) {
+  if (!messages.length) return;
+  noticeModal.tone = tone;
+  noticeModal.title = title;
+  noticeModal.messages = [...new Set(messages.filter(Boolean))];
+  noticeModal.open = true;
+}
+function closeNotice() {
+  noticeModal.open = false;
+  noticeModal.tone = "warning";
+  noticeModal.title = "";
+  noticeModal.messages = [];
+}
+function toUserNotice(message: string) {
+  const lower = message.toLowerCase();
+  if (
+    lower.includes("weather_agent") ||
+    lower.includes("maps_weather") ||
+    lower.includes("forecast") ||
+    lower.includes("天气")
+  ) {
+    return "天气数据暂时不可用，系统已使用现有信息继续完成本次规划。";
+  }
+  if (
+    lower.includes("route") ||
+    lower.includes("driving") ||
+    lower.includes("walking") ||
+    lower.includes("transit") ||
+    lower.includes("路线")
+  ) {
+    return "部分路线数据暂时不可用，系统已保留基础行程安排。";
+  }
+  if (lower.includes("hotel") || lower.includes("住宿")) {
+    return "住宿推荐数据暂时不完整，系统已提供当前可用建议。";
+  }
+  if (
+    lower.includes("poi") ||
+    lower.includes("restaurant") ||
+    lower.includes("maps_text_search") ||
+    lower.includes("景点") ||
+    lower.includes("餐饮")
+  ) {
+    return "部分景点或餐饮数据暂时不可用，系统已尽量补全本次规划。";
+  }
+  if (lower.includes("llm") || lower.includes("大模型")) {
+    return "智能生成阶段使用了备用方案，但行程仍已成功生成。";
+  }
+  return "本次规划过程中有部分数据暂时不可用，系统已尽量完成行程。";
+}
+function toUserError(message: string) {
+  const lower = message.toLowerCase();
+  if (
+    lower.includes("timeout") ||
+    lower.includes("connection") ||
+    lower.includes("network") ||
+    lower.includes("connect")
+  ) {
+    return "当前网络或服务连接异常，请稍后重试。";
+  }
+  return "行程暂时生成失败，请稍后重试。";
+}
+function buildPlanNotices(response: PlanningResponse) {
+  const warnings = [
+    ...response.meta.warnings,
+    ...response.integration_status.warnings,
+  ].filter(Boolean);
+  return [...new Set(warnings.map(toUserNotice))];
+}
 
 function createEmptyIntegrationStatus(): IntegrationStatus {
   return {
@@ -189,6 +259,11 @@ async function loadIntegrationStatus() {
         ? error.message
         : "获取集成状态失败，请检查后端服务。";
     integrationStatus.value = createEmptyIntegrationStatus();
+    if (showDevPanels) {
+      openNotice("warning", "暂时无法获取集成状态", [
+        "请检查后端服务和地图配置后再试。",
+      ]);
+    }
   } finally {
     integrationLoading.value = false;
   }
@@ -258,7 +333,6 @@ function stopProgress(success = true) {
 }
 async function submitPlan() {
   loading.value = true;
-  errorMessage.value = "";
   form.must_visit = splitText(mustVisitText.value);
   form.dining_preferences = splitText(diningText.value);
   startProgress();
@@ -280,17 +354,22 @@ async function submitPlan() {
     integrationStatus.value = result.value.integration_status;
     expandedDays.value = [];
     stopProgress(true);
+    const notices = buildPlanNotices(result.value);
+    if (notices.length) {
+      openNotice("warning", "本次规划已完成", notices);
+    }
   } catch (error) {
-    errorMessage.value =
+    const message =
       error instanceof Error ? error.message : "生成行程失败，请稍后重试。";
     stopProgress(false);
+    openNotice("error", "规划失败", [toUserError(message)]);
+    console.error("plan generation failed", error);
   } finally {
     loading.value = false;
   }
 }
 function resetPlanner() {
   result.value = null;
-  errorMessage.value = "";
   expandedDays.value = [];
 }
 async function exportAs(type: "png" | "pdf") {
@@ -301,7 +380,7 @@ async function exportAs(type: "png" | "pdf") {
   try {
     const canvas = await html2canvas(exportRoot.value, {
       scale: 2,
-      backgroundColor: "#edf2f5",
+      backgroundColor: "#eef4f9",
     });
     if (type === "png") {
       const link = document.createElement("a");
@@ -509,15 +588,10 @@ function budgetLabel(value: TripPlanningRequest["budget_level"]) {
                   class="w-full rounded-[22px] border border-slate-200 bg-white px-4 py-3"
                 >
                   <option value="">请选择住宿风格</option>
-                  <option
-                    v-for="item in hotelOptions"
-                    :key="item"
-                    :value="item"
-                  >
+                  <option v-for="item in hotelOptions" :key="item" :value="item">
                     {{ item }}
-                  </option>
-                </select></label
-              >
+                  </option></select
+              ></label>
             </div>
             <div class="mt-6 grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
               <div>
@@ -562,7 +636,6 @@ function budgetLabel(value: TripPlanningRequest["budget_level"]) {
               :progress-label="progressLabel"
               :loading="loading"
               :can-submit="Boolean(form.destination)"
-              :error-message="errorMessage"
               compact
               @submit="submitPlan"
             />
@@ -570,7 +643,6 @@ function budgetLabel(value: TripPlanningRequest["budget_level"]) {
               v-if="showDevPanels"
               :integration-status="currentIntegrationStatus"
               :integration-loading="integrationLoading"
-              :warnings="combinedWarnings"
               @refresh="loadIntegrationStatus"
             />
           </div>
@@ -662,15 +734,6 @@ function budgetLabel(value: TripPlanningRequest["budget_level"]) {
                   {{ result.plan.best_booking_tip }}
                 </div>
               </div>
-            </div>
-          </div>
-          <div
-            v-if="resultWarnings.length"
-            class="mt-6 rounded-[24px] border border-amber-200/40 bg-amber-50/90 px-4 py-4 text-sm leading-7 text-amber-900"
-          >
-            <div class="font-medium">规划提醒</div>
-            <div v-for="warning in resultWarnings" :key="warning" class="mt-2">
-              {{ warning }}
             </div>
           </div>
         </article>
@@ -774,4 +837,11 @@ function budgetLabel(value: TripPlanningRequest["budget_level"]) {
       </section>
     </div>
   </div>
+  <NotificationModal
+    :open="noticeModal.open"
+    :tone="noticeModal.tone"
+    :title="noticeModal.title"
+    :messages="noticeModal.messages"
+    @close="closeNotice"
+  />
 </template>
