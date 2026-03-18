@@ -1,7 +1,8 @@
-﻿from datetime import date, datetime
+﻿import re
+from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class TravelerProfile(BaseModel):
@@ -24,6 +25,13 @@ class TripPlanningRequest(BaseModel):
     dining_preferences: list[str] = Field(default_factory=list)
     travelers: TravelerProfile = Field(default_factory=TravelerProfile)
     notes: str | None = None
+    @field_validator("destination")
+    @classmethod
+    def validate_destination(cls, value: str) -> str:
+        normalized = value.strip()
+        if not re.fullmatch(r"[\u4e00-\u9fff]{2,30}", normalized):
+            raise ValueError("目的地仅支持中文城市名（例如：上海、北京市）")
+        return normalized
 
 
 class ToolCallRecord(BaseModel):

@@ -105,16 +105,30 @@ class PlanningCoordinatorAgent:
             )
         )
 
-        context.weather = await self.weather_agent.gather(request, tool_trace)
-        agent_trace.append(
-            AgentExecution(
-                agent_name="weather_agent",
-                success=True,
-                summary=f"已获取 {len(context.weather.daily_forecasts)} 天天气信息。",
-                used_llm=False,
-                used_tools=[integration_status.resolved_tools.get("weather", self.adapter.settings.amap_mcp_tool_weather)],
+        try:
+            context.weather = await self.weather_agent.gather(request, tool_trace)
+            agent_trace.append(
+                AgentExecution(
+                    agent_name="weather_agent",
+                    success=True,
+                    summary=f"已获取 {len(context.weather.daily_forecasts)} 天天气信息。",
+                    used_llm=False,
+                    used_tools=[integration_status.resolved_tools.get("weather", self.adapter.settings.amap_mcp_tool_weather)],
+                )
             )
-        )
+        except Exception as exc:
+            weather_warning = f"weather_agent 调用失败: {exc}"
+            warnings.append(weather_warning)
+            agent_trace.append(
+                AgentExecution(
+                    agent_name="weather_agent",
+                    success=False,
+                    summary="天气数据不可用，已在无天气详情条件下继续生成行程。",
+                    used_llm=False,
+                    used_tools=[integration_status.resolved_tools.get("weather", self.adapter.settings.amap_mcp_tool_weather)],
+                    warnings=[str(exc)],
+                )
+            )
 
         day_restaurants = self.meal_agent.gather(request, initial_plan, context.restaurants)
         agent_trace.append(

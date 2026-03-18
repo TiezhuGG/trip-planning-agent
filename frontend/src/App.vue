@@ -128,6 +128,7 @@ const summaryTags = computed(() =>
     ]),
   ].slice(0, 5),
 );
+const destinationValid = computed(() => isChineseCityName(form.destination));
 
 watch([startDate, endDate], ([start, end]) => {
   if (!start) return;
@@ -211,6 +212,9 @@ function toUserNotice(message: string) {
 }
 function toUserError(message: string) {
   const lower = message.toLowerCase();
+  if (lower.includes("destination") || message.includes("城市名")) {
+    return "目的地仅支持中文城市名，例如：上海、北京市。";
+  }
   if (
     lower.includes("timeout") ||
     lower.includes("connection") ||
@@ -301,6 +305,9 @@ function splitText(value: string) {
     .map((item) => item.trim())
     .filter(Boolean);
 }
+function isChineseCityName(value: string) {
+  return /^[\u4e00-\u9fff]{2,30}$/.test(value.trim());
+}
 function startProgress() {
   progress.value = 8;
   progressLabel.value = stageOptions[0];
@@ -332,6 +339,13 @@ function stopProgress(success = true) {
     }, 900);
 }
 async function submitPlan() {
+  const normalizedDestination = form.destination.trim();
+  if (!isChineseCityName(normalizedDestination)) {
+    openNotice("error", "输入有误", [
+      "目的地仅支持中文城市名，例如：上海、北京市。",
+    ]);
+    return;
+  }
   loading.value = true;
   form.must_visit = splitText(mustVisitText.value);
   form.dining_preferences = splitText(diningText.value);
@@ -340,6 +354,7 @@ async function submitPlan() {
     result.value = await generatePlan({
       ...form,
       origin: form.origin?.trim() || null,
+      destination: normalizedDestination,
       hotel_style: form.hotel_style || "舒适型酒店",
       interests: [...form.interests],
       must_visit: [...form.must_visit],
@@ -635,7 +650,7 @@ function budgetLabel(value: TripPlanningRequest["budget_level"]) {
               :progress="progress"
               :progress-label="progressLabel"
               :loading="loading"
-              :can-submit="Boolean(form.destination)"
+              :can-submit="destinationValid"
               compact
               @submit="submitPlan"
             />

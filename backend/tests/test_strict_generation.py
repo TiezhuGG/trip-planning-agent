@@ -22,7 +22,7 @@ from app.services.ai_client import TravelAIClient
 
 def _build_request(days: int, adults: int, children: int = 0, seniors: int = 0) -> TripPlanningRequest:
     return TripPlanningRequest(
-        destination="Hangzhou",
+        destination="\u676d\u5dde",
         start_date=date(2026, 3, 10),
         days=days,
         interests=["food", "culture"],
@@ -150,7 +150,7 @@ def test_compose_plan_requires_llm_configuration() -> None:
             ),
         ],
     )
-    context = PlanningContext(destination="Hangzhou", weather=WeatherSummary())
+    context = PlanningContext(destination="\u676d\u5dde", weather=WeatherSummary())
 
     with pytest.raises(RuntimeError):
         asyncio.run(client.compose_plan(request, initial_plan, context, []))
