@@ -1,18 +1,11 @@
 <script setup lang="ts">
 import DailyItineraryCard from "./DailyItineraryCard.vue";
-import type {
-  DailyForecast,
-  DayPlan,
-  MealRecommendation,
-  POIRecommendation,
-  RouteSummary,
-} from "../types/planning";
+import type { DailyForecast, DayPlan, MealRecommendation, RouteSummary } from "../types/planning";
 
 const props = defineProps<{
   days: DayPlan[];
   routes: RouteSummary[];
   weatherForecasts: DailyForecast[];
-  restaurants: POIRecommendation[];
   expandedDays: number[];
 }>();
 
@@ -28,12 +21,10 @@ function toggleDay(dayNumber: number) {
   emit("toggle", dayNumber);
 }
 
-function getDayRoute(day: DayPlan): RouteSummary | null {
-  return (
-    day.route_summary ??
-    props.routes.find((route) => route.day_number === day.day_number) ??
-    null
-  );
+function getDayRoutes(day: DayPlan): RouteSummary[] {
+  if (day.route_summaries?.length) return day.route_summaries;
+  if (day.route_summary) return [day.route_summary];
+  return props.routes.filter((route) => route.day_number === day.day_number);
 }
 
 function getDayWeather(day: DayPlan): DailyForecast | null {
@@ -44,17 +35,8 @@ function getDayWeather(day: DayPlan): DailyForecast | null {
   );
 }
 
-function getMealRecommendations(
-  day: DayPlan,
-): Array<MealRecommendation | POIRecommendation> {
-  if (day.meals.length) return day.meals;
-  if (!props.restaurants.length) return [];
-  const take = Math.min(3, props.restaurants.length);
-  const startIndex = ((day.day_number - 1) * take) % props.restaurants.length;
-  return Array.from(
-    { length: take },
-    (_, index) => props.restaurants[(startIndex + index) % props.restaurants.length],
-  );
+function getMealRecommendations(day: DayPlan): MealRecommendation[] {
+  return day.meals;
 }
 </script>
 
@@ -72,7 +54,7 @@ function getMealRecommendations(
         </h2>
       </div>
       <span class="rounded-full bg-[#eff5f8] px-4 py-2 text-sm text-[#48637b]"
-        >整卡展开后查看当日细节</span
+        >展开后可查看当日路线、住宿与费用</span
       >
     </div>
     <div class="mt-5 space-y-4">
@@ -81,7 +63,7 @@ function getMealRecommendations(
         :key="`${day.day_number}-${day.date}-${index}`"
         :day="day"
         :expanded="isDayExpanded(day.day_number)"
-        :route-summary="getDayRoute(day)"
+        :route-summaries="getDayRoutes(day)"
         :weather="getDayWeather(day)"
         :meal-recommendations="getMealRecommendations(day)"
         @toggle="toggleDay"

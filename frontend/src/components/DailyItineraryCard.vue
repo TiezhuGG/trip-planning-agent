@@ -3,16 +3,15 @@ import type {
   DailyForecast,
   DayPlan,
   MealRecommendation,
-  POIRecommendation,
   RouteSummary,
 } from "../types/planning";
 
 const props = defineProps<{
   day: DayPlan;
   expanded: boolean;
-  routeSummary: RouteSummary | null;
+  routeSummaries: RouteSummary[];
   weather: DailyForecast | null;
-  mealRecommendations: Array<MealRecommendation | POIRecommendation>;
+  mealRecommendations: MealRecommendation[];
 }>();
 
 const emit = defineEmits<{
@@ -23,12 +22,6 @@ function onToggle() {
   emit("toggle", props.day.day_number);
 }
 
-function isStructuredMeal(
-  item: MealRecommendation | POIRecommendation,
-): item is MealRecommendation {
-  return "meal_type" in item;
-}
-
 function mealLabel(type: string) {
   return (
     { breakfast: "早餐", lunch: "午餐", dinner: "晚餐", snack: "加餐" }[type] ??
@@ -36,18 +29,9 @@ function mealLabel(type: string) {
   );
 }
 
-function mealTitle(item: MealRecommendation | POIRecommendation) {
-  return isStructuredMeal(item)
-    ? `${mealLabel(item.meal_type)} · ${item.venue_name}`
-    : item.name;
-}
-
-function mealSubtitle(item: MealRecommendation | POIRecommendation) {
-  return isStructuredMeal(item)
-    ? [item.cuisine, item.suggestion, item.estimated_cost]
-        .filter(Boolean)
-        .join(" · ")
-    : [item.address, item.tags.join(" / ")].filter(Boolean).join(" · ");
+function formatCny(value: number, suffix = "") {
+  if (!value) return "";
+  return `¥${value.toLocaleString()}${suffix}`;
 }
 </script>
 
@@ -56,7 +40,7 @@ function mealSubtitle(item: MealRecommendation | POIRecommendation) {
     <div class="flex flex-wrap items-start justify-between gap-4">
       <div>
         <div class="text-lg font-semibold text-ink">
-          第 {{ day.day_number }} 天 · {{ day.theme }}
+          第{{ day.day_number }}天 · {{ day.theme }}
         </div>
         <div class="mt-2 text-sm text-slate-500">
           {{ day.date }}
@@ -66,6 +50,9 @@ function mealSubtitle(item: MealRecommendation | POIRecommendation) {
         <span class="rounded-full border border-[#d7e2ec] bg-[#eef4f9] px-4 py-2 text-sm text-[#35516b] shadow-sm">
           {{ weather?.day_weather || "--" }}
           {{ weather ? `${weather.low_temperature}°-${weather.high_temperature}°` : "" }}
+        </span>
+        <span class="rounded-full border border-[#d7e2ec] bg-[#eef4f9] px-4 py-2 text-sm text-[#35516b] shadow-sm">
+          当日人均 {{ formatCny(day.cost_breakdown.total_per_person_cny) }}
         </span>
         <button
           type="button"
@@ -84,89 +71,114 @@ function mealSubtitle(item: MealRecommendation | POIRecommendation) {
 
       <div class="grid gap-4 xl:grid-cols-[1.08fr_0.92fr]">
         <div class="space-y-3">
-          <template v-if="day.activities.length">
-            <div
-              v-for="(activity, activityIndex) in day.activities"
-              :key="`${day.day_number}-${activity.start_time}-${activity.title}-${activityIndex}`"
-              class="rounded-[22px] border border-[#e3ebf2] bg-[#f8fbfd] px-4 py-4 text-sm text-slate-600 shadow-sm"
-            >
-              <div class="font-medium text-ink">
-                {{ activity.start_time }} - {{ activity.end_time }} · {{ activity.title }}
-              </div>
-              <div class="mt-2 leading-6">
-                {{ activity.description }}
-              </div>
+          <div class="rounded-[22px] border border-[#e3ebf2] bg-[#f8fbfd] px-4 py-4 text-sm text-slate-600 shadow-sm">
+            <div class="font-medium text-ink">当日景点与活动</div>
+            <div v-if="day.activities.length" class="mt-3 space-y-3">
               <div
-                v-if="activity.transport_from_previous"
-                class="mt-3 text-xs text-slate-500"
+                v-for="(activity, activityIndex) in day.activities"
+                :key="`${day.day_number}-${activity.start_time}-${activity.title}-${activityIndex}`"
+                class="rounded-[18px] border border-[#dfe8f1] bg-white px-3 py-3"
               >
-                {{ activity.transport_from_previous }}
+                <div class="font-medium text-ink">
+                  {{ activity.start_time }} - {{ activity.end_time }} · {{ activity.title }}
+                </div>
+                <div class="mt-2 leading-6">
+                  {{ activity.description }}
+                </div>
+                <div class="mt-2 text-xs text-slate-500">
+                  门票：{{ activity.expected_cost || formatCny(activity.ticket_cost_cny, "/人") || "待确认" }}
+                </div>
+                <div
+                  v-if="activity.transport_from_previous"
+                  class="mt-2 text-xs text-slate-500"
+                >
+                  {{ activity.transport_from_previous }}
+                </div>
               </div>
             </div>
-          </template>
-          <div
-            v-else
-            class="rounded-[22px] border border-[#e3ebf2] bg-[#f8fbfd] px-4 py-4 text-sm text-slate-500 shadow-sm"
-          >
-            暂无详细活动安排
+            <div v-else class="mt-3 text-slate-500">暂无活动安排</div>
+          </div>
+
+          <div class="rounded-[22px] border border-[#e3ebf2] bg-[#f8fbfd] px-4 py-4 text-sm text-slate-600 shadow-sm">
+            <div class="font-medium text-ink">酒店住宿推荐</div>
+            <div class="mt-3 rounded-[18px] border border-[#dfe8f1] bg-white px-3 py-3">
+              <div class="font-medium text-ink">
+                {{ day.stay.hotel_name || "待确认酒店" }}
+              </div>
+              <div class="mt-2 text-xs text-slate-500">
+                区域：{{ day.stay.area || day.hotel_area || "待定" }}
+              </div>
+              <div class="mt-2 text-xs leading-6 text-slate-500">
+                {{ day.stay.reason || "优先靠近当日主要行程点，减少往返时间。" }}
+              </div>
+              <div class="mt-3 text-xs text-[#2f5a81]">
+                当日酒店费用：{{ formatCny(day.stay.room_nightly_cost_cny, "/间夜") || "待确认" }}
+              </div>
+            </div>
           </div>
         </div>
 
         <div class="space-y-3">
           <div class="rounded-[22px] border border-[#e3ebf2] bg-[#f8fbfd] px-4 py-4 text-sm text-slate-600 shadow-sm">
             <div class="font-medium text-ink">路线概览</div>
-            <div class="mt-3 leading-6">
-              {{ routeSummary?.distance_text || "距离待补充" }}
-              {{ routeSummary?.duration_text ? ` · ${routeSummary.duration_text}` : "" }}
-            </div>
-            <div
-              v-if="routeSummary?.from_name || routeSummary?.to_name"
-              class="mt-2 text-xs text-slate-500"
-            >
-              {{ routeSummary?.from_name || "起点待定" }} →
-              {{ routeSummary?.to_name || "终点待定" }}
-            </div>
-          </div>
-
-          <div class="space-y-3">
-            <div class="rounded-[22px] border border-[#e3ebf2] bg-[#f8fbfd] px-4 py-4 text-sm text-slate-600 shadow-sm">
-              <div class="font-medium text-ink">天气与体感</div>
-              <div v-if="weather" class="mt-3">
-                <div>
-                  {{ weather.day_weather }} / {{ weather.night_weather }}
+            <div v-if="routeSummaries.length" class="mt-3 space-y-3">
+              <div
+                v-for="(route, routeIndex) in routeSummaries"
+                :key="`${day.day_number}-${route.title}-${route.from_name}-${route.to_name}-${routeIndex}`"
+                class="rounded-[18px] border border-[#dfe8f1] bg-white px-3 py-3"
+              >
+                <div class="font-medium text-ink">{{ route.title || `路线 ${routeIndex + 1}` }}</div>
+                <div class="mt-2 text-xs text-slate-500">
+                  {{ route.from_name || "起点待定" }} → {{ route.to_name || "终点待定" }}
                 </div>
                 <div class="mt-2 text-xs text-slate-500">
-                  {{ weather.low_temperature }}° - {{ weather.high_temperature }}°
+                  {{ route.distance_text || "距离待补充" }}
+                  {{ route.duration_text ? ` · ${route.duration_text}` : "" }}
                 </div>
-                <div class="mt-3 leading-6">
-                  {{ weather.advice }}
+                <div class="mt-2 text-xs text-[#2f5a81]">
+                  当段交通费用：{{ formatCny(route.estimated_transport_cost_cny, "/人") || "待确认" }}
                 </div>
-              </div>
-              <div v-else class="mt-3 text-slate-500">
-                暂无天气信息
               </div>
             </div>
+            <div v-else class="mt-3 text-slate-500">暂无路线信息</div>
+          </div>
 
-            <div class="rounded-[22px] border border-[#e3ebf2] bg-[#f8fbfd] px-4 py-4 text-sm text-slate-600 shadow-sm">
-              <div class="font-medium text-ink">餐饮推荐</div>
-              <div v-if="mealRecommendations.length" class="mt-3 space-y-2">
-                <div
-                  v-for="(meal, mealIndex) in mealRecommendations"
-                  :key="`${day.day_number}-${mealTitle(meal)}-${mealSubtitle(meal)}-${mealIndex}`"
-                  class="rounded-[18px] border border-[#dfe8f1] bg-white px-3 py-3"
-                >
-                  <div class="font-medium text-ink">
-                    {{ mealTitle(meal) }}
-                  </div>
-                  <div class="mt-2 text-xs leading-6 text-slate-500">
-                    {{ mealSubtitle(meal) }}
-                  </div>
-                </div>
+          <div class="rounded-[22px] border border-[#e3ebf2] bg-[#f8fbfd] px-4 py-4 text-sm text-slate-600 shadow-sm">
+            <div class="font-medium text-ink">天气与体感</div>
+            <div v-if="weather" class="mt-3">
+              <div>
+                {{ weather.day_weather }} / {{ weather.night_weather }}
               </div>
-              <div v-else class="mt-3 text-slate-500">
-                暂无餐饮推荐
+              <div class="mt-2 text-xs text-slate-500">
+                {{ weather.low_temperature }}° - {{ weather.high_temperature }}°
+              </div>
+              <div class="mt-3 leading-6">
+                {{ weather.advice }}
               </div>
             </div>
+            <div v-else class="mt-3 text-slate-500">暂无天气信息</div>
+          </div>
+
+          <div class="rounded-[22px] border border-[#e3ebf2] bg-[#f8fbfd] px-4 py-4 text-sm text-slate-600 shadow-sm">
+            <div class="font-medium text-ink">餐饮推荐</div>
+            <div v-if="mealRecommendations.length" class="mt-3 space-y-2">
+              <div
+                v-for="(meal, mealIndex) in mealRecommendations"
+                :key="`${day.day_number}-${meal.venue_name}-${meal.meal_type}-${mealIndex}`"
+                class="rounded-[18px] border border-[#dfe8f1] bg-white px-3 py-3"
+              >
+                <div class="font-medium text-ink">
+                  {{ mealLabel(meal.meal_type) }} · {{ meal.venue_name }}
+                </div>
+                <div class="mt-2 text-xs leading-6 text-slate-500">
+                  {{ [meal.cuisine, meal.suggestion].filter(Boolean).join(" · ") }}
+                </div>
+                <div class="mt-2 text-xs text-[#2f5a81]">
+                  {{ meal.estimated_cost || formatCny(meal.estimated_cost_cny, "/人") || "费用待确认" }}
+                </div>
+              </div>
+            </div>
+            <div v-else class="mt-3 text-slate-500">暂无餐饮推荐</div>
           </div>
         </div>
       </div>

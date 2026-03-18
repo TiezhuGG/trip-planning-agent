@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import asyncio
+import re
 from datetime import timedelta
 from typing import Any
 
@@ -1023,6 +1024,7 @@ class AmapMCPAdapter:
             distance_text=self._format_distance_text(distance_text) or "待工具返回",
             duration_text=self._format_duration_text(duration_text) or "待工具返回",
             mode=mode,
+            estimated_transport_cost_cny=self._extract_transport_cost_cny(route_root, route_data, mode),
             steps=steps,
             polyline=polyline,
         )
@@ -1160,6 +1162,7 @@ class AmapMCPAdapter:
             distance_text="12km",
             duration_text="35分钟",
             mode=mode,
+            estimated_transport_cost_cny=30 if mode in {"driving", "transit"} else 0,
             steps=[
                 RouteStep(instruction=f"从 {origin.name} 出发前往 {waypoints[0].name if waypoints else destination.name}", distance_text="5km", duration_text="15分钟"),
                 RouteStep(instruction=f"继续前往 {destination.name}", distance_text="7km", duration_text="20分钟"),
@@ -1324,12 +1327,64 @@ class AmapMCPAdapter:
             distance_text=f"{total_km:.1f}公里",
             duration_text=f"约 {duration_minutes} 分钟",
             mode=mode,
+            estimated_transport_cost_cny=self._estimate_fallback_transport_cost(total_km, mode),
             steps=[
                 RouteStep(instruction=f"从 {origin.name} 出发，前往 {step_target}", distance_text="", duration_text=""),
                 RouteStep(instruction=f"随后继续前往 {destination.name}", distance_text="", duration_text=""),
             ],
             polyline=polyline,
         )
+
+    def _extract_transport_cost_cny(
+        self,
+        route_root: dict[str, Any] | None,
+        route_data: Any,
+        mode: str,
+    ) -> int:
+        if mode in {"walking", "bicycling"}:
+            return 0
+
+        root = route_root if isinstance(route_root, dict) else {}
+        data = route_data if isinstance(route_data, dict) else {}
+
+        transit_cost = self._parse_cny_amount(data.get("cost"))
+        taxi_cost = self._parse_cny_amount(root.get("taxi_cost"))
+        tolls = self._parse_cny_amount(data.get("tolls"))
+
+        if mode == "transit":
+            if transit_cost is not None:
+                return transit_cost
+            if taxi_cost is not None:
+                return taxi_cost
+            return 0
+
+        if taxi_cost is not None:
+            return taxi_cost
+        if tolls is not None:
+            return tolls
+        return 0
+
+    def _parse_cny_amount(self, value: Any) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return max(0, int(round(float(value))))
+        text = str(value).strip()
+        if not text:
+            return None
+        numbers = [float(item.replace(",", "")) for item in re.findall(r"\d+(?:\.\d+)?", text)]
+        if not numbers:
+            return None
+        if len(numbers) == 1:
+            return max(0, int(round(numbers[0])))
+        return max(0, int(round(sum(numbers[:2]) / 2)))
+
+    def _estimate_fallback_transport_cost(self, total_km: float, mode: str) -> int:
+        if mode in {"walking", "bicycling"}:
+            return 0
+        if mode == "transit":
+            return max(2, int(round(total_km * 1.8)))
+        return max(10, int(round(total_km * 4.5)))
 
     def _polyline_distance_km(self, polyline: list[GeoPoint]) -> float:
         if len(polyline) < 2:

@@ -11,7 +11,6 @@ import LandingHero from "./components/LandingHero.vue";
 import IntegrationPrecheckPanel from "./components/IntegrationPrecheckPanel.vue";
 import NotificationModal from "./components/NotificationModal.vue";
 import PlannerLaunchPanel from "./components/PlannerLaunchPanel.vue";
-import ResultSidebar from "./components/ResultSidebar.vue";
 import TravelTonePanel from "./components/TravelTonePanel.vue";
 import type {
   IntegrationStatus,
@@ -98,17 +97,6 @@ const currentIntegrationStatus = computed(
   () => result.value?.integration_status ?? integrationStatus.value,
 );
 const travelerSummary = computed(() => formatTravelers(form.travelers));
-const budgetCards = computed<Array<[string, string]>>(() => {
-  const budget = result.value?.plan.estimated_budget;
-  return budget
-    ? [
-        ["景点门票", budget.tickets],
-        ["酒店住宿", budget.accommodation],
-        ["餐饮费用", budget.food],
-        ["交通费用", budget.transport],
-      ]
-    : [];
-});
 const inputSummary = computed(() => [
   {
     label: "路线",
@@ -723,7 +711,7 @@ function budgetLabel(value: TripPlanningRequest["budget_level"]) {
                 class="rounded-[24px] border border-white/10 bg-white/10 px-4 py-4"
               >
                 <div class="text-xs uppercase tracking-[0.18em] text-white/55">
-                  预算总计
+                  Budget Total
                 </div>
                 <div class="mt-3 text-2xl font-semibold">
                   {{ result.plan.estimated_budget.total_estimate }}
@@ -733,26 +721,26 @@ function budgetLabel(value: TripPlanningRequest["budget_level"]) {
                 class="rounded-[24px] border border-white/10 bg-white/10 px-4 py-4"
               >
                 <div class="text-xs uppercase tracking-[0.18em] text-white/55">
-                  天气摘要
+                  City Tips
                 </div>
                 <div class="mt-3 text-sm leading-6 text-white/80">
-                  {{ result.plan.weather_summary }}
+                  {{ result.plan.city_tips.join(", ") || "No city tips" }}
                 </div>
               </div>
               <div
                 class="rounded-[24px] border border-white/10 bg-white/10 px-4 py-4 sm:col-span-2"
               >
                 <div class="text-xs uppercase tracking-[0.18em] text-white/55">
-                  预订提示
+                  Packing List
                 </div>
                 <div class="mt-3 text-sm leading-6 text-white/80">
-                  {{ result.plan.best_booking_tip }}
+                  {{ result.plan.packing_list.join(", ") || "No packing suggestions" }}
                 </div>
               </div>
             </div>
           </div>
         </article>
-        <section class="grid gap-6 xl:grid-cols-[1.08fr_0.92fr]">
+        <section class="space-y-6">
           <div class="space-y-6">
             <article
               class="rounded-[36px] border border-white/70 bg-white/88 p-6 shadow-card sm:p-7"
@@ -790,17 +778,10 @@ function budgetLabel(value: TripPlanningRequest["budget_level"]) {
               :weather-forecasts="
                 result.planning_context.weather.daily_forecasts
               "
-              :restaurants="result.planning_context.restaurants"
               :expanded-days="expandedDays"
               @toggle="toggleDay"
             />
           </div>
-          <ResultSidebar
-            :budget-cards="budgetCards"
-            :plan="result.plan"
-            :show-dev-panels="showDevPanels"
-            :integration-status="currentIntegrationStatus"
-          />
         </section>
         <section v-if="showDevPanels" class="grid gap-6 xl:grid-cols-2">
           <div

@@ -64,6 +64,7 @@ export interface RouteSummary {
   distance_text: string
   duration_text: string
   mode: string
+  estimated_transport_cost_cny: number
   steps: RouteStep[]
   polyline: GeoPoint[]
 }
@@ -99,6 +100,7 @@ export interface MealRecommendation {
   cuisine: string
   suggestion: string
   estimated_cost: string
+  estimated_cost_cny: number
 }
 
 export interface Activity {
@@ -110,7 +112,24 @@ export interface Activity {
   location_name: string
   transport_from_previous?: string | null
   expected_cost?: string | null
+  ticket_cost_cny: number
   booking_tip?: string | null
+}
+
+export interface DayStayInfo {
+  area: string
+  hotel_name: string
+  reason: string
+  room_nightly_cost_cny: number
+}
+
+export interface DayCostBreakdown {
+  accommodation_per_person_cny: number
+  transport_per_person_cny: number
+  food_per_person_cny: number
+  tickets_per_person_cny: number
+  extras_per_person_cny: number
+  total_per_person_cny: number
 }
 
 export interface DayPlan {
@@ -119,11 +138,14 @@ export interface DayPlan {
   theme: string
   overview: string
   hotel_area: string
+  stay: DayStayInfo
+  cost_breakdown: DayCostBreakdown
   transport_tips: string[]
   meals: MealRecommendation[]
   activities: Activity[]
   weather?: DailyForecast | null
   route_summary?: RouteSummary | null
+  route_summaries: RouteSummary[]
 }
 
 export interface StayRecommendation {

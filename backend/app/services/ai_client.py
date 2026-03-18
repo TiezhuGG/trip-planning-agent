@@ -1,7 +1,9 @@
 ﻿from __future__ import annotations
 
+import asyncio
 import json
 import math
+import re
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -12,8 +14,10 @@ from app.config import Settings
 from app.schemas.planning import (
     Activity,
     BudgetBreakdown,
+    DayCostBreakdown,
     DailyForecast,
     DayPlan,
+    DayStayInfo,
     InitialPlanDay,
     InitialPlanDraft,
     MealRecommendation,
@@ -132,15 +136,37 @@ class TravelAIClient:
     async def build_initial_plan(self, request: TripPlanningRequest) -> InitialPlanBuildResult:
         if self.client is None:
             raise RuntimeError("未配置可用的大模型客户端，无法生成初步规划。")
-        try:
-            return InitialPlanBuildResult(
-                draft=await self._generate_initial_plan_with_openai(request),
-                used_llm=True,
-                fallback_used=False,
-                warnings=[],
-            )
-        except Exception as exc:
-            raise RuntimeError(f"初步规划调用大模型失败: {self._format_exception(exc)}") from exc
+        warnings: list[str] = []
+        retry_specs = [
+            (0.4, 2048),
+            (0.2, 3072),
+            (0.1, 3072),
+            (0.0, 4096),
+            (0.0, 4096),
+        ]
+        last_error: Exception | None = None
+        for attempt, (temperature, max_tokens) in enumerate(retry_specs, start=1):
+            try:
+                draft = await self._generate_initial_plan_with_openai(
+                    request,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                return InitialPlanBuildResult(
+                    draft=draft,
+                    used_llm=True,
+                    fallback_used=False,
+                    warnings=warnings,
+                )
+            except Exception as exc:
+                last_error = exc
+                if not self._is_retryable_seed_error(exc) or attempt >= len(retry_specs):
+                    break
+                warnings.append(f"seed 第 {attempt} 次失败，已重试。原因: {self._format_exception(exc)}")
+                await asyncio.sleep(min(2.0, 0.4 * attempt))
+
+        assert last_error is not None
+        raise RuntimeError(f"初步规划调用大模型失败: {self._format_exception(last_error)}") from last_error
 
     async def compose_plan(
         self,
@@ -152,16 +178,22 @@ class TravelAIClient:
         if self.client is None:
             raise RuntimeError("未配置可用的大模型客户端，无法生成最终行程。")
         try:
+            plan, warnings = await self._compose_with_openai(request, initial_plan, context, tool_trace)
             return FinalPlanBuildResult(
-                plan=await self._compose_with_openai(request, initial_plan, context, tool_trace),
+                plan=plan,
                 used_llm=True,
                 fallback_used=False,
-                warnings=[],
+                warnings=warnings,
             )
         except Exception as exc:
             raise RuntimeError(f"最终行程汇总调用大模型失败: {self._format_exception(exc)}") from exc
 
-    async def _generate_initial_plan_with_openai(self, request: TripPlanningRequest) -> InitialPlanDraft:
+    async def _generate_initial_plan_with_openai(
+        self,
+        request: TripPlanningRequest,
+        temperature: float = 0.4,
+        max_tokens: int | None = None,
+    ) -> InitialPlanDraft:
         assert self.client is not None
         schema_hint = {
             "summary": "string",
@@ -188,7 +220,8 @@ class TravelAIClient:
                 "request": request.model_dump(mode="json"),
                 "response_schema_hint": schema_hint,
             },
-            temperature=0.4,
+            temperature=temperature,
+            max_tokens=max_tokens,
         )
         draft = InitialPlanDraft.model_validate(payload)
         self._ensure_initial_plan_integrity(request, draft)
@@ -200,7 +233,7 @@ class TravelAIClient:
         initial_plan: InitialPlanDraft,
         context: PlanningContext,
         tool_trace: list[ToolCallRecord],
-    ) -> TravelPlan:
+    ) -> tuple[TravelPlan, list[str]]:
         assert self.client is not None
         schema_hint = {
             "title": "string",
@@ -237,18 +270,6 @@ class TravelAIClient:
                         "low_temperature": "string",
                         "advice": "string",
                     },
-                    "route_summary": {
-                        "day_number": 1,
-                        "title": "string",
-                        "from_name": "string",
-                        "to_name": "string",
-                        "waypoints": ["string"],
-                        "distance_text": "string",
-                        "duration_text": "string",
-                        "mode": "string",
-                        "steps": [{"instruction": "string", "distance_text": "string", "duration_text": "string"}],
-                        "polyline": [{"longitude": 0, "latitude": 0}],
-                    },
                     "meals": [
                         {
                             "meal_type": "breakfast|lunch|dinner|snack",
@@ -280,21 +301,134 @@ class TravelAIClient:
             context=context,
             tool_trace=tool_trace,
         )
-        payload = await self._request_json_payload(
-            system_prompt=(
-                "You are a senior trip planner. "
-                "Use the provided draft, map data, weather, and routes to produce the final plan. "
-                "Return JSON only and keep user-facing text natural Chinese. "
-                "days must contain exactly request.days records with unique day_number from 1..request.days. "
-                "Each day must include at least one activity and one meal."
-            ),
-            user_payload={**user_payload, "response_schema_hint": schema_hint},
-            temperature=0.7,
-            max_tokens=8192,
-        )
+        warnings: list[str] = []
+        last_error: Exception | None = None
+        retry_specs = [
+            (0.35, 8192),
+            (0.15, 9216),
+            (0.0, 10240),
+        ]
+
+        for attempt, (temperature, max_tokens) in enumerate(retry_specs, start=1):
+            payload: dict[str, Any] | None = None
+            try:
+                payload = await self._request_json_payload(
+                    system_prompt=(
+                        "You are a senior trip planner. "
+                        "Use the provided draft, map data, weather, and routes to produce the final plan. "
+                        "Return JSON only and keep user-facing text natural Chinese. "
+                        "days must contain exactly request.days records with unique day_number from 1..request.days. "
+                        "Each day must include at least one activity and meals that cover breakfast, lunch, and dinner. "
+                        "Keep descriptions concise and avoid verbose wording."
+                    ),
+                    user_payload={**user_payload, "response_schema_hint": schema_hint},
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                plan = self._finalize_composed_plan(request=request, context=context, payload=payload)
+                return plan, warnings
+            except Exception as exc:
+                if payload is not None and self._is_retryable_compose_error(exc):
+                    repaired_payload = await self._repair_compose_payload(
+                        request=request,
+                        raw_payload=payload,
+                        schema_hint=schema_hint,
+                    )
+                    if repaired_payload is not None:
+                        try:
+                            plan = self._finalize_composed_plan(
+                                request=request,
+                                context=context,
+                                payload=repaired_payload,
+                            )
+                            warnings.append(f"compose 第 {attempt} 次触发补全修复并成功。")
+                            return plan, warnings
+                        except Exception as repair_exc:
+                            exc = repair_exc
+
+                last_error = exc
+                if not self._is_retryable_compose_error(exc) or attempt >= len(retry_specs):
+                    break
+                warnings.append(
+                    f"compose 第 {attempt} 次失败，已重试。原因: {self._format_exception(exc)}"
+                )
+
+        assert last_error is not None
+        raise last_error
+
+    def _finalize_composed_plan(
+        self,
+        request: TripPlanningRequest,
+        context: PlanningContext,
+        payload: dict[str, Any],
+    ) -> TravelPlan:
         plan = TravelPlan.model_validate(payload)
+        plan = self._normalize_plan_days(request, plan, context)
         self._ensure_final_plan_integrity(request, plan)
         return self._apply_deterministic_budget(request, plan)
+
+    async def _repair_compose_payload(
+        self,
+        request: TripPlanningRequest,
+        raw_payload: dict[str, Any],
+        schema_hint: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        try:
+            return await self._request_json_payload(
+                system_prompt=(
+                    "You are a JSON repair assistant for travel plans. "
+                    "Return JSON only. Keep natural Chinese text. "
+                    "Fix the plan so days contains exactly request.days records "
+                    "with unique day_number from 1..request.days."
+                ),
+                user_payload={
+                    "request": request.model_dump(mode="json"),
+                    "broken_plan": raw_payload,
+                    "response_schema_hint": schema_hint,
+                },
+                temperature=0,
+                max_tokens=8192,
+            )
+        except Exception:
+            return None
+
+    def _is_retryable_compose_error(self, exc: Exception) -> bool:
+        message = str(exc).lower()
+        retryable_keywords = (
+            "天数不匹配",
+            "day_number",
+            "不可解析",
+            "timed out",
+            "timeout",
+            "readtimeout",
+            "apitimeouterror",
+            "json_object",
+            "plain_text_json",
+            "minimal",
+        )
+        return isinstance(exc, (ValueError, RuntimeError, httpx.TimeoutException)) and any(
+            keyword in message for keyword in retryable_keywords
+        )
+
+    def _is_retryable_seed_error(self, exc: Exception) -> bool:
+        message = str(exc).lower()
+        retryable_keywords = (
+            "timed out",
+            "timeout",
+            "readtimeout",
+            "apitimeouterror",
+            "json_object",
+            "plain_text_json",
+            "不可解析",
+            "error code: 400",
+            "output data may contain inappropriate content",
+            "service unavailable",
+            "rate limit",
+            "temporarily",
+        )
+        return isinstance(exc, (ValueError, RuntimeError, httpx.TimeoutException)) and any(
+            keyword in message for keyword in retryable_keywords
+        )
 
     def _build_compose_user_payload(
         self,
@@ -382,6 +516,7 @@ class TravelAIClient:
             "distance_text": route.distance_text,
             "duration_text": route.duration_text,
             "mode": route.mode,
+            "estimated_transport_cost_cny": route.estimated_transport_cost_cny,
             "steps": [step.model_dump(mode="json") for step in route.steps[:step_limit]],
         }
 
@@ -505,97 +640,250 @@ class TravelAIClient:
                 raise ValueError(f"第 {day.day_number} 天缺少 activities。")
             if not day.meals:
                 raise ValueError(f"第 {day.day_number} 天缺少 meals。")
-            if day.route_summary and day.route_summary.day_number not in (None, day.day_number):
-                raise ValueError(f"第 {day.day_number} 天 route_summary.day_number 不一致。")
+            if not day.route_summaries:
+                raise ValueError(f"第 {day.day_number} 天缺少 route_summaries。")
+            for route in day.route_summaries:
+                if route.day_number not in (None, day.day_number):
+                    raise ValueError(f"第 {day.day_number} 天 route_summaries.day_number 不一致。")
+            expected_total = (
+                day.cost_breakdown.accommodation_per_person_cny
+                + day.cost_breakdown.transport_per_person_cny
+                + day.cost_breakdown.food_per_person_cny
+                + day.cost_breakdown.tickets_per_person_cny
+                + day.cost_breakdown.extras_per_person_cny
+            )
+            if day.cost_breakdown.total_per_person_cny != expected_total:
+                raise ValueError(f"第 {day.day_number} 天 cost_breakdown.total_per_person_cny 不一致。")
+
+    def _normalize_plan_days(
+        self,
+        request: TripPlanningRequest,
+        plan: TravelPlan,
+        context: PlanningContext,
+    ) -> TravelPlan:
+        routes_by_day: dict[int, list[RouteSummary]] = {}
+        for route in context.routes:
+            if route.day_number is None:
+                continue
+            routes_by_day.setdefault(route.day_number, []).append(route)
+
+        head_count = max(
+            1,
+            request.travelers.adults + request.travelers.children + request.travelers.seniors,
+        )
+        room_count = max(1, math.ceil(head_count / 2))
+        stays = plan.stay_recommendations
+
+        normalized_days: list[DayPlan] = []
+        for day_index, day in enumerate(sorted(plan.days, key=lambda item: item.day_number)):
+            route_summaries = list(day.route_summaries)
+            if day.route_summary is not None and not route_summaries:
+                route_summaries = [day.route_summary]
+            if routes_by_day.get(day.day_number):
+                route_summaries = routes_by_day[day.day_number]
+            route_summaries = [
+                route.model_copy(update={"day_number": day.day_number})
+                if route.day_number is None
+                else route
+                for route in route_summaries
+            ]
+
+            stay = day.stay
+            if not stay.hotel_name and stays:
+                fallback_stay = stays[day_index % len(stays)]
+                stay = stay.model_copy(
+                    update={
+                        "area": stay.area or fallback_stay.area or day.hotel_area,
+                        "hotel_name": fallback_stay.hotel_name,
+                        "reason": stay.reason or fallback_stay.reason,
+                    }
+                )
+            elif not stay.hotel_name and context.hotels:
+                hotel = context.hotels[day_index % len(context.hotels)]
+                stay = stay.model_copy(
+                    update={
+                        "area": stay.area or hotel.address or day.hotel_area,
+                        "hotel_name": hotel.name,
+                        "reason": stay.reason or "靠近当日主要活动区域，换乘更省时。",
+                    }
+                )
+
+            room_nightly_cost_cny = stay.room_nightly_cost_cny
+            if room_nightly_cost_cny <= 0 and stays:
+                room_nightly_cost_cny = self._extract_cny_amount(stays[day_index % len(stays)].nightly_budget)
+            stay = stay.model_copy(
+                update={
+                    "area": stay.area or day.hotel_area,
+                    "room_nightly_cost_cny": max(0, room_nightly_cost_cny),
+                }
+            )
+
+            normalized_activities: list[Activity] = []
+            for activity in day.activities:
+                ticket_cost_cny = activity.ticket_cost_cny or self._extract_cny_amount(activity.expected_cost)
+                expected_cost = activity.expected_cost or (f"¥{ticket_cost_cny}/人" if ticket_cost_cny else None)
+                normalized_activities.append(
+                    activity.model_copy(
+                        update={
+                            "ticket_cost_cny": max(0, ticket_cost_cny),
+                            "expected_cost": expected_cost,
+                        }
+                    )
+                )
+
+            normalized_meals: list[MealRecommendation] = []
+            for meal in day.meals:
+                estimated_cost_cny = meal.estimated_cost_cny or self._extract_cny_amount(meal.estimated_cost)
+                estimated_cost = meal.estimated_cost or (f"¥{estimated_cost_cny}/人" if estimated_cost_cny else "")
+                normalized_meals.append(
+                    meal.model_copy(
+                        update={
+                            "estimated_cost_cny": max(0, estimated_cost_cny),
+                            "estimated_cost": estimated_cost,
+                        }
+                    )
+                )
+            normalized_meals = self._ensure_daily_core_meals(
+                meals=normalized_meals,
+                restaurants=context.restaurants,
+                stay=stay,
+                hotel_area=day.hotel_area,
+                day_theme=day.theme,
+                day_index=day_index,
+            )
+
+            normalized_routes: list[RouteSummary] = []
+            for route in route_summaries:
+                transport_cost = route.estimated_transport_cost_cny
+                normalized_routes.append(
+                    route.model_copy(
+                        update={
+                            "estimated_transport_cost_cny": max(0, transport_cost),
+                        }
+                    )
+                )
+
+            tickets_per_person = sum(item.ticket_cost_cny for item in normalized_activities)
+            food_per_person = sum(item.estimated_cost_cny for item in normalized_meals)
+            transport_per_person = sum(item.estimated_transport_cost_cny for item in normalized_routes)
+            accommodation_per_person = day.cost_breakdown.accommodation_per_person_cny
+            if accommodation_per_person <= 0 and stay.room_nightly_cost_cny > 0:
+                accommodation_per_person = int(round(stay.room_nightly_cost_cny * room_count / head_count))
+            extras_per_person = day.cost_breakdown.extras_per_person_cny
+            total_per_person = (
+                accommodation_per_person
+                + transport_per_person
+                + food_per_person
+                + tickets_per_person
+                + extras_per_person
+            )
+            cost_breakdown = DayCostBreakdown(
+                accommodation_per_person_cny=max(0, accommodation_per_person),
+                transport_per_person_cny=max(0, transport_per_person),
+                food_per_person_cny=max(0, food_per_person),
+                tickets_per_person_cny=max(0, tickets_per_person),
+                extras_per_person_cny=max(0, extras_per_person),
+                total_per_person_cny=max(0, total_per_person),
+            )
+
+            normalized_days.append(
+                day.model_copy(
+                    update={
+                        "stay": stay,
+                        "activities": normalized_activities,
+                        "meals": normalized_meals,
+                        "route_summaries": normalized_routes,
+                        "route_summary": normalized_routes[0] if normalized_routes else None,
+                        "cost_breakdown": cost_breakdown,
+                    }
+                )
+            )
+
+        return plan.model_copy(update={"days": normalized_days})
+
+    def _ensure_daily_core_meals(
+        self,
+        meals: list[MealRecommendation],
+        restaurants: list[Any],
+        stay: DayStayInfo,
+        hotel_area: str,
+        day_theme: str,
+        day_index: int,
+    ) -> list[MealRecommendation]:
+        by_type: dict[str, MealRecommendation] = {}
+        for meal in meals:
+            by_type.setdefault(meal.meal_type, meal)
+
+        def _fallback_meal(meal_type: str) -> MealRecommendation:
+            base_cost = {"breakfast": 30, "lunch": 80, "dinner": 120}[meal_type]
+            if meal_type == "breakfast":
+                venue = f"{stay.hotel_name} 早餐厅" if stay.hotel_name else f"{hotel_area or '酒店附近'} 早餐店"
+                cuisine = "本地早餐"
+                suggestion = "建议 08:00 前后用餐，出发前补充能量。"
+            else:
+                offset = 0 if meal_type == "lunch" else 1
+                candidate = restaurants[(day_index * 2 + offset) % len(restaurants)] if restaurants else None
+                venue = getattr(candidate, "name", "") or f"{day_theme} 附近餐厅"
+                cuisine = ",".join(getattr(candidate, "tags", [])[:2]) if candidate else "本地风味"
+                suggestion = "优先选择当日行程片区内餐厅，减少往返耗时。"
+            return MealRecommendation(
+                meal_type=meal_type,  # type: ignore[arg-type]
+                venue_name=venue,
+                cuisine=cuisine,
+                suggestion=suggestion,
+                estimated_cost=f"¥{base_cost}/人",
+                estimated_cost_cny=base_cost,
+            )
+
+        ordered = [
+            by_type.get("breakfast") or _fallback_meal("breakfast"),
+            by_type.get("lunch") or _fallback_meal("lunch"),
+            by_type.get("dinner") or _fallback_meal("dinner"),
+        ]
+        extras = [meal for meal in meals if meal.meal_type not in {"breakfast", "lunch", "dinner"}]
+        return ordered + extras
 
     def _apply_deterministic_budget(
         self,
         request: TripPlanningRequest,
         plan: TravelPlan,
     ) -> TravelPlan:
-        budget_profiles = {
-            "economy": {
-                "accommodation": (260, 420),
-                "transport": (45, 90),
-                "food": (70, 130),
-                "tickets": (80, 180),
-                "extras": (120, 260),
-            },
-            "comfort": {
-                "accommodation": (420, 780),
-                "transport": (90, 180),
-                "food": (130, 240),
-                "tickets": (160, 320),
-                "extras": (220, 420),
-            },
-            "luxury": {
-                "accommodation": (900, 1800),
-                "transport": (180, 360),
-                "food": (280, 520),
-                "tickets": (300, 620),
-                "extras": (400, 850),
-            },
-        }
-        profile = budget_profiles[request.budget_level]
-
-        head_count = request.travelers.adults + request.travelers.children + request.travelers.seniors
-        traveler_units = (
-            request.travelers.adults
-            + request.travelers.children * 0.6
-            + request.travelers.seniors * 0.8
-        )
-        traveler_units = max(1.0, traveler_units)
-        head_count = max(1, head_count)
-
-        days = max(1, request.days)
-        nights = max(1, request.days - 1)
-        room_count = max(1, math.ceil(head_count / 2))
-
-        accommodation_low = int(round(room_count * nights * profile["accommodation"][0]))
-        accommodation_high = int(round(room_count * nights * profile["accommodation"][1]))
-        transport_low = int(round(traveler_units * days * profile["transport"][0]))
-        transport_high = int(round(traveler_units * days * profile["transport"][1]))
-        food_low = int(round(traveler_units * days * profile["food"][0]))
-        food_high = int(round(traveler_units * days * profile["food"][1]))
-        tickets_low = int(round(traveler_units * days * profile["tickets"][0]))
-        tickets_high = int(round(traveler_units * days * profile["tickets"][1]))
-        extras_low = int(round(traveler_units * profile["extras"][0]))
-        extras_high = int(round(traveler_units * profile["extras"][1]))
-
-        total_low = accommodation_low + transport_low + food_low + tickets_low + extras_low
-        total_high = accommodation_high + transport_high + food_high + tickets_high + extras_high
-
+        _ = request
         sorted_days = sorted(plan.days, key=lambda item: item.day_number)
-        nightly_low, nightly_high = profile["accommodation"]
-        updated_stays = [
-            stay.model_copy(
-                update={
-                    "nightly_budget": f"¥{nightly_low:,}-¥{nightly_high:,}/间夜",
-                }
-            )
-            for stay in plan.stay_recommendations
-        ]
+        accommodation = sum(day.cost_breakdown.accommodation_per_person_cny for day in sorted_days)
+        transport = sum(day.cost_breakdown.transport_per_person_cny for day in sorted_days)
+        food = sum(day.cost_breakdown.food_per_person_cny for day in sorted_days)
+        tickets = sum(day.cost_breakdown.tickets_per_person_cny for day in sorted_days)
+        extras = sum(day.cost_breakdown.extras_per_person_cny for day in sorted_days)
+        total = sum(day.cost_breakdown.total_per_person_cny for day in sorted_days)
 
         return plan.model_copy(
             update={
                 "estimated_budget": BudgetBreakdown(
                     currency="CNY",
-                    accommodation=self._format_budget_range(accommodation_low, accommodation_high),
-                    transport=self._format_budget_range(transport_low, transport_high),
-                    food=self._format_budget_range(food_low, food_high),
-                    tickets=self._format_budget_range(tickets_low, tickets_high),
-                    extras=self._format_budget_range(extras_low, extras_high),
-                    total_estimate=self._format_budget_range(total_low, total_high),
+                    accommodation=self._format_per_person_amount(accommodation),
+                    transport=self._format_per_person_amount(transport),
+                    food=self._format_per_person_amount(food),
+                    tickets=self._format_per_person_amount(tickets),
+                    extras=self._format_per_person_amount(extras),
+                    total_estimate=self._format_per_person_amount(total),
                 ),
-                "stay_recommendations": updated_stays,
                 "days": sorted_days,
             }
         )
 
-    def _format_budget_range(self, low: int, high: int) -> str:
-        floor = max(0, min(low, high))
-        ceil = max(0, max(low, high))
-        return f"¥{floor:,}-¥{ceil:,}"
+    def _extract_cny_amount(self, value: str | None) -> int:
+        if not value:
+            return 0
+        numbers = [float(item.replace(",", "")) for item in re.findall(r"\d+(?:\.\d+)?", value)]
+        if not numbers:
+            return 0
+        if len(numbers) == 1:
+            return max(0, int(round(numbers[0])))
+        return max(0, int(round(sum(numbers[:2]) / 2)))
+
+    def _format_per_person_amount(self, value: int) -> str:
+        return f"¥{max(0, value):,}/人"
 
     def _fallback_initial_plan(self, request: TripPlanningRequest) -> InitialPlanDraft:
         interest_pool = request.interests or ["城市地标", "本地文化", "特色美食", "休闲漫游"]
@@ -668,7 +956,8 @@ class TravelAIClient:
                         description=f"围绕 {attraction.name} 安排核心游览与拍照时间，并根据现场排队情况灵活微调。",
                         location_name=attraction.name,
                         transport_from_previous=transport_tip,
-                        expected_cost="门票和体验消费以现场或官方平台为准",
+                        expected_cost="¥80/人",
+                        ticket_cost_cny=80,
                         booking_tip="热门景点建议提前预约并错峰到达",
                     )
                 )
@@ -700,6 +989,14 @@ class TravelAIClient:
                     activities=activities,
                     weather=day_weather,
                     route_summary=day_route,
+                    route_summaries=[day_route] if day_route else [],
+                    stay=DayStayInfo(
+                        area=hotel.address if hotel and hotel.address else request.hotel_style,
+                        hotel_name=hotel.name if hotel else f"{request.destination} 市中心酒店",
+                        reason="靠近主要游览区域，适合当日行程动线。",
+                        room_nightly_cost_cny=self._extract_cny_amount(stay_cost),
+                    ),
+                    cost_breakdown=DayCostBreakdown(),
                 )
             )
 
@@ -809,6 +1106,7 @@ class TravelAIClient:
                     cuisine="本地特色 / 人气餐厅",
                     suggestion=suggestions[index],
                     estimated_cost=food_cost,
+                    estimated_cost_cny=self._extract_cny_amount(food_cost),
                 )
             )
         return meals

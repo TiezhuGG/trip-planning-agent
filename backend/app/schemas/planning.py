@@ -75,6 +75,7 @@ class RouteSummary(BaseModel):
     distance_text: str = ""
     duration_text: str = ""
     mode: str = "driving"
+    estimated_transport_cost_cny: int = Field(default=0, ge=0)
     steps: list[RouteStep] = Field(default_factory=list)
     polyline: list[GeoPoint] = Field(default_factory=list)
 
@@ -110,6 +111,7 @@ class MealRecommendation(BaseModel):
     cuisine: str = ""
     suggestion: str = ""
     estimated_cost: str = ""
+    estimated_cost_cny: int = Field(default=0, ge=0)
 
 
 class Activity(BaseModel):
@@ -121,7 +123,24 @@ class Activity(BaseModel):
     location_name: str
     transport_from_previous: str | None = None
     expected_cost: str | None = None
+    ticket_cost_cny: int = Field(default=0, ge=0)
     booking_tip: str | None = None
+
+
+class DayStayInfo(BaseModel):
+    area: str = ""
+    hotel_name: str = ""
+    reason: str = ""
+    room_nightly_cost_cny: int = Field(default=0, ge=0)
+
+
+class DayCostBreakdown(BaseModel):
+    accommodation_per_person_cny: int = Field(default=0, ge=0)
+    transport_per_person_cny: int = Field(default=0, ge=0)
+    food_per_person_cny: int = Field(default=0, ge=0)
+    tickets_per_person_cny: int = Field(default=0, ge=0)
+    extras_per_person_cny: int = Field(default=0, ge=0)
+    total_per_person_cny: int = Field(default=0, ge=0)
 
 
 class DayPlan(BaseModel):
@@ -130,11 +149,14 @@ class DayPlan(BaseModel):
     theme: str
     overview: str
     hotel_area: str
+    stay: DayStayInfo = Field(default_factory=DayStayInfo)
+    cost_breakdown: DayCostBreakdown = Field(default_factory=DayCostBreakdown)
     transport_tips: list[str] = Field(default_factory=list)
     meals: list[MealRecommendation] = Field(default_factory=list)
     activities: list[Activity] = Field(default_factory=list)
     weather: DailyForecast | None = None
     route_summary: RouteSummary | None = None
+    route_summaries: list[RouteSummary] = Field(default_factory=list)
 
 
 class StayRecommendation(BaseModel):

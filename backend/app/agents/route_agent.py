@@ -36,37 +36,49 @@ class RoutePlanningAgent:
                 raise ValueError(f"第 {day.day_number} 天缺少可用于路线规划的景点或餐饮节点。")
 
             origin = self._select_origin(hotels, route_points)
-            destination = meal_points[-1] if meal_points else route_points[-1]
-            waypoints = route_points[:-1] if destination == route_points[-1] else route_points
-            if waypoints and waypoints[0] == origin:
-                waypoints = waypoints[1:]
-            if destination in waypoints:
-                waypoints = [item for item in waypoints if item != destination]
-
-            trace_start = len(trace)
             preferred_mode = self._preferred_mode(request)
-            route = await self.adapter.plan_route(
-                day_number=day.day_number,
-                origin=origin,
-                destination=destination,
-                waypoints=waypoints,
-                mode=preferred_mode,
-                trace=trace,
-            )
-            routes.append(route)
+            daily_had_fallback = False
+            ordered_points = self._dedupe_points([origin, *route_points])
+            if len(ordered_points) < 2:
+                raise ValueError(f"第 {day.day_number} 天路线节点不足，无法拆分多段路线。")
 
-            day_tools = {
-                item.tool_name
-                for item in trace[trace_start:]
-                if item.tool_name.startswith("maps_direction")
-                or item.tool_name.startswith("maps_bicycling")
-                or item.tool_name.startswith("amap_webservice_")
-            }
-            used_tools.update(day_tools)
-            if route.mode != preferred_mode:
+            for segment_index in range(len(ordered_points) - 1):
+                segment_origin = ordered_points[segment_index]
+                segment_destination = ordered_points[segment_index + 1]
+                if segment_origin == segment_destination:
+                    continue
+
+                trace_start = len(trace)
+                route = await self.adapter.plan_route(
+                    day_number=day.day_number,
+                    origin=segment_origin,
+                    destination=segment_destination,
+                    waypoints=[],
+                    mode=preferred_mode,
+                    trace=trace,
+                )
+                route = route.model_copy(
+                    update={
+                        "title": f"第 {day.day_number} 天路线 {segment_index + 1}",
+                    }
+                )
+                routes.append(route)
+
+                day_tools = {
+                    item.tool_name
+                    for item in trace[trace_start:]
+                    if item.tool_name.startswith("maps_direction")
+                    or item.tool_name.startswith("maps_bicycling")
+                    or item.tool_name.startswith("amap_webservice_")
+                }
+                used_tools.update(day_tools)
+                if route.mode != preferred_mode:
+                    daily_had_fallback = True
+
+            if daily_had_fallback:
                 fallback_days += 1
 
-        summary = f"已生成 {len(routes)} 条每日路线。" if routes else "暂无可用的每日路线结果。"
+        summary = f"已生成 {len(routes)} 条分段路线。" if routes else "暂无可用的每日路线结果。"
         if fallback_days:
             summary = f"{summary} 其中 {fallback_days} 天因路况数据限制切换为其他交通方式。"
 
@@ -81,6 +93,17 @@ class RoutePlanningAgent:
                 warnings=[],
             ),
         )
+
+    def _dedupe_points(self, points: list[POIRecommendation]) -> list[POIRecommendation]:
+        deduped: list[POIRecommendation] = []
+        seen: set[str] = set()
+        for poi in points:
+            key = poi.poi_id or poi.name
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(poi)
+        return deduped
 
     def _select_day_attractions(
         self,
