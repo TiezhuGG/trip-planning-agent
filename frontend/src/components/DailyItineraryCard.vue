@@ -86,8 +86,8 @@ function mealSubtitle(item: MealRecommendation | POIRecommendation) {
         <div class="space-y-3">
           <template v-if="day.activities.length">
             <div
-              v-for="activity in day.activities"
-              :key="`${day.day_number}-${activity.start_time}-${activity.title}`"
+              v-for="(activity, activityIndex) in day.activities"
+              :key="`${day.day_number}-${activity.start_time}-${activity.title}-${activityIndex}`"
               class="rounded-[22px] border border-[#e3ebf2] bg-[#f8fbfd] px-4 py-4 text-sm text-slate-600 shadow-sm"
             >
               <div class="font-medium text-ink">
@@ -151,8 +151,8 @@ function mealSubtitle(item: MealRecommendation | POIRecommendation) {
               <div class="font-medium text-ink">餐饮推荐</div>
               <div v-if="mealRecommendations.length" class="mt-3 space-y-2">
                 <div
-                  v-for="meal in mealRecommendations"
-                  :key="`${day.day_number}-${mealTitle(meal)}-${mealSubtitle(meal)}`"
+                  v-for="(meal, mealIndex) in mealRecommendations"
+                  :key="`${day.day_number}-${mealTitle(meal)}-${mealSubtitle(meal)}-${mealIndex}`"
                   class="rounded-[18px] border border-[#dfe8f1] bg-white px-3 py-3"
                 >
                   <div class="font-medium text-ink">

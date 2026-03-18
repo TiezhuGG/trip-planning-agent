@@ -25,7 +25,6 @@ class RoutePlanningAgent:
         trace: list[ToolCallRecord],
     ) -> tuple[list[RouteSummary], AgentExecution]:
         routes: list[RouteSummary] = []
-        warnings: list[str] = []
         used_tools: set[str] = set()
         fallback_days = 0
 
@@ -34,7 +33,7 @@ class RoutePlanningAgent:
             meal_points = day_restaurants.get(day.day_number, [])
             route_points = [*day_attractions[:2], *meal_points[:2]]
             if not route_points:
-                continue
+                raise ValueError(f"第 {day.day_number} 天缺少可用于路线规划的景点或餐饮节点。")
 
             origin = self._select_origin(hotels, route_points)
             destination = meal_points[-1] if meal_points else route_points[-1]
@@ -46,44 +45,40 @@ class RoutePlanningAgent:
 
             trace_start = len(trace)
             preferred_mode = self._preferred_mode(request)
-            try:
-                route = await self.adapter.plan_route(
-                    day_number=day.day_number,
-                    origin=origin,
-                    destination=destination,
-                    waypoints=waypoints,
-                    mode=preferred_mode,
-                    trace=trace,
-                )
-                routes.append(route)
+            route = await self.adapter.plan_route(
+                day_number=day.day_number,
+                origin=origin,
+                destination=destination,
+                waypoints=waypoints,
+                mode=preferred_mode,
+                trace=trace,
+            )
+            routes.append(route)
 
-                day_tools = {
-                    item.tool_name
-                    for item in trace[trace_start:]
-                    if item.tool_name.startswith("maps_direction")
-                    or item.tool_name.startswith("maps_bicycling")
-                    or item.tool_name.startswith("amap_webservice_")
-                    or item.tool_name == "route_fallback_summary"
-                }
-                used_tools.update(day_tools)
-                if route.mode != preferred_mode or "route_fallback_summary" in day_tools:
-                    fallback_days += 1
-            except Exception as exc:
-                warnings.append(f"第 {day.day_number} 天路线规划失败: {exc}")
+            day_tools = {
+                item.tool_name
+                for item in trace[trace_start:]
+                if item.tool_name.startswith("maps_direction")
+                or item.tool_name.startswith("maps_bicycling")
+                or item.tool_name.startswith("amap_webservice_")
+            }
+            used_tools.update(day_tools)
+            if route.mode != preferred_mode:
+                fallback_days += 1
 
         summary = f"已生成 {len(routes)} 条每日路线。" if routes else "暂无可用的每日路线结果。"
         if fallback_days:
-            summary = f"{summary} 其中 {fallback_days} 天已自动降级为概览路线。"
+            summary = f"{summary} 其中 {fallback_days} 天因路况数据限制切换为其他交通方式。"
 
         return (
             routes,
             AgentExecution(
                 agent_name="route_agent",
-                success=not warnings,
+                success=True,
                 summary=summary,
                 used_llm=False,
                 used_tools=sorted(used_tools),
-                warnings=warnings,
+                warnings=[],
             ),
         )
 

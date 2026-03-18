@@ -77,8 +77,8 @@ function getMealRecommendations(
     </div>
     <div class="mt-5 space-y-4">
       <DailyItineraryCard
-        v-for="day in days"
-        :key="day.day_number"
+        v-for="(day, index) in days"
+        :key="`${day.day_number}-${day.date}-${index}`"
         :day="day"
         :expanded="isDayExpanded(day.day_number)"
         :route-summary="getDayRoute(day)"

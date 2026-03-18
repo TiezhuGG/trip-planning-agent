@@ -199,13 +199,10 @@ class AmapMCPAdapter:
         trace: list[ToolCallRecord],
     ) -> RouteSummary:
         if self.client is None:
-            return self._mock_route(day_number, origin, destination, waypoints, mode)
+            raise MCPProtocolError("未配置高德 MCP 客户端，无法执行路线规划。")
 
-        attempted_modes: list[str] = []
         errors: list[str] = []
         for candidate_mode in self._route_mode_candidates(mode):
-            attempted_modes.append(candidate_mode)
-
             if candidate_mode in {"transit", "driving", "walking"}:
                 try:
                     raw = await self._plan_route_via_web_service(candidate_mode, origin, destination, waypoints, trace)
@@ -225,20 +222,7 @@ class AmapMCPAdapter:
                 except Exception as exc:
                     errors.append(f"{candidate_mode}/{tool_name}: {exc}")
 
-        fallback_route = self._fallback_route(day_number, origin, destination, waypoints, mode)
-        trace.append(
-            ToolCallRecord(
-                tool_name="route_fallback_summary",
-                arguments={
-                    "origin": origin.name,
-                    "destination": destination.name,
-                    "mode": mode,
-                },
-                success=True,
-                summary=f"路线工具失败，已回退为概览路线：{'；'.join(errors[:3])}",
-            )
-        )
-        return fallback_route
+        raise MCPProtocolError(f"第 {day_number} 天路线规划失败: {'；'.join(errors[:4])}")
 
     async def _plan_transit_via_web_service(
         self,

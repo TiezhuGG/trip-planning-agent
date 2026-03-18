@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -129,28 +130,17 @@ class TravelAIClient:
             )
 
     async def build_initial_plan(self, request: TripPlanningRequest) -> InitialPlanBuildResult:
-        if self.client is not None:
-            try:
-                return InitialPlanBuildResult(
-                    draft=await self._generate_initial_plan_with_openai(request),
-                    used_llm=True,
-                    fallback_used=False,
-                    warnings=[],
-                )
-            except Exception as exc:
-                return InitialPlanBuildResult(
-                    draft=self._fallback_initial_plan(request),
-                    used_llm=False,
-                    fallback_used=True,
-                    warnings=[f"初步规划调用大模型失败，已回退到规则模板: {self._format_exception(exc)}"],
-                )
-
-        return InitialPlanBuildResult(
-            draft=self._fallback_initial_plan(request),
-            used_llm=False,
-            fallback_used=True,
-            warnings=["未配置大模型，初步规划使用规则模板生成。"],
-        )
+        if self.client is None:
+            raise RuntimeError("未配置可用的大模型客户端，无法生成初步规划。")
+        try:
+            return InitialPlanBuildResult(
+                draft=await self._generate_initial_plan_with_openai(request),
+                used_llm=True,
+                fallback_used=False,
+                warnings=[],
+            )
+        except Exception as exc:
+            raise RuntimeError(f"初步规划调用大模型失败: {self._format_exception(exc)}") from exc
 
     async def compose_plan(
         self,
@@ -159,28 +149,17 @@ class TravelAIClient:
         context: PlanningContext,
         tool_trace: list[ToolCallRecord],
     ) -> FinalPlanBuildResult:
-        if self.client is not None:
-            try:
-                return FinalPlanBuildResult(
-                    plan=await self._compose_with_openai(request, initial_plan, context, tool_trace),
-                    used_llm=True,
-                    fallback_used=False,
-                    warnings=[],
-                )
-            except Exception as exc:
-                return FinalPlanBuildResult(
-                    plan=self._fallback_plan(request, initial_plan, context),
-                    used_llm=False,
-                    fallback_used=True,
-                    warnings=[f"最终行程汇总调用大模型失败，已回退到规则模板: {self._format_exception(exc)}"],
-                )
-
-        return FinalPlanBuildResult(
-            plan=self._fallback_plan(request, initial_plan, context),
-            used_llm=False,
-            fallback_used=True,
-            warnings=["未配置大模型，最终行程使用规则模板生成。"],
-        )
+        if self.client is None:
+            raise RuntimeError("未配置可用的大模型客户端，无法生成最终行程。")
+        try:
+            return FinalPlanBuildResult(
+                plan=await self._compose_with_openai(request, initial_plan, context, tool_trace),
+                used_llm=True,
+                fallback_used=False,
+                warnings=[],
+            )
+        except Exception as exc:
+            raise RuntimeError(f"最终行程汇总调用大模型失败: {self._format_exception(exc)}") from exc
 
     async def _generate_initial_plan_with_openai(self, request: TripPlanningRequest) -> InitialPlanDraft:
         assert self.client is not None
@@ -201,7 +180,9 @@ class TravelAIClient:
         payload = await self._request_json_payload(
             system_prompt=(
                 "You are a travel-planning orchestrator. "
-                "Return JSON only. Keep all user-facing text natural Chinese."
+                "Return JSON only. Keep all user-facing text natural Chinese. "
+                "The draft must contain exactly request.days items in days, "
+                "with unique day_number values from 1 to request.days."
             ),
             user_payload={
                 "request": request.model_dump(mode="json"),
@@ -209,7 +190,9 @@ class TravelAIClient:
             },
             temperature=0.4,
         )
-        return InitialPlanDraft.model_validate(payload)
+        draft = InitialPlanDraft.model_validate(payload)
+        self._ensure_initial_plan_integrity(request, draft)
+        return draft
 
     async def _compose_with_openai(
         self,
@@ -301,12 +284,17 @@ class TravelAIClient:
             system_prompt=(
                 "You are a senior trip planner. "
                 "Use the provided draft, map data, weather, and routes to produce the final plan. "
-                "Return JSON only and keep user-facing text natural Chinese."
+                "Return JSON only and keep user-facing text natural Chinese. "
+                "days must contain exactly request.days records with unique day_number from 1..request.days. "
+                "Each day must include at least one activity and one meal."
             ),
             user_payload={**user_payload, "response_schema_hint": schema_hint},
             temperature=0.7,
+            max_tokens=8192,
         )
-        return TravelPlan.model_validate(payload)
+        plan = TravelPlan.model_validate(payload)
+        self._ensure_final_plan_integrity(request, plan)
+        return self._apply_deterministic_budget(request, plan)
 
     def _build_compose_user_payload(
         self,
@@ -479,6 +467,135 @@ class TravelAIClient:
             else:
                 parts.append(f"cause={cause.__class__.__name__}")
         return " | ".join(parts)
+
+    def _ensure_initial_plan_integrity(
+        self,
+        request: TripPlanningRequest,
+        draft: InitialPlanDraft,
+    ) -> None:
+        if len(draft.days) != request.days:
+            raise ValueError(f"初步规划天数不匹配: 期望 {request.days} 天，实际 {len(draft.days)} 天。")
+
+        day_numbers = [day.day_number for day in draft.days]
+        if len(day_numbers) != len(set(day_numbers)):
+            raise ValueError("初步规划包含重复 day_number。")
+
+        expected = set(range(1, request.days + 1))
+        if set(day_numbers) != expected:
+            raise ValueError("初步规划的 day_number 必须覆盖 1..request.days。")
+
+    def _ensure_final_plan_integrity(
+        self,
+        request: TripPlanningRequest,
+        plan: TravelPlan,
+    ) -> None:
+        if len(plan.days) != request.days:
+            raise ValueError(f"最终行程天数不匹配: 期望 {request.days} 天，实际 {len(plan.days)} 天。")
+
+        day_numbers = [day.day_number for day in plan.days]
+        if len(day_numbers) != len(set(day_numbers)):
+            raise ValueError("最终行程包含重复 day_number。")
+
+        expected = set(range(1, request.days + 1))
+        if set(day_numbers) != expected:
+            raise ValueError("最终行程的 day_number 必须覆盖 1..request.days。")
+
+        for day in plan.days:
+            if not day.activities:
+                raise ValueError(f"第 {day.day_number} 天缺少 activities。")
+            if not day.meals:
+                raise ValueError(f"第 {day.day_number} 天缺少 meals。")
+            if day.route_summary and day.route_summary.day_number not in (None, day.day_number):
+                raise ValueError(f"第 {day.day_number} 天 route_summary.day_number 不一致。")
+
+    def _apply_deterministic_budget(
+        self,
+        request: TripPlanningRequest,
+        plan: TravelPlan,
+    ) -> TravelPlan:
+        budget_profiles = {
+            "economy": {
+                "accommodation": (260, 420),
+                "transport": (45, 90),
+                "food": (70, 130),
+                "tickets": (80, 180),
+                "extras": (120, 260),
+            },
+            "comfort": {
+                "accommodation": (420, 780),
+                "transport": (90, 180),
+                "food": (130, 240),
+                "tickets": (160, 320),
+                "extras": (220, 420),
+            },
+            "luxury": {
+                "accommodation": (900, 1800),
+                "transport": (180, 360),
+                "food": (280, 520),
+                "tickets": (300, 620),
+                "extras": (400, 850),
+            },
+        }
+        profile = budget_profiles[request.budget_level]
+
+        head_count = request.travelers.adults + request.travelers.children + request.travelers.seniors
+        traveler_units = (
+            request.travelers.adults
+            + request.travelers.children * 0.6
+            + request.travelers.seniors * 0.8
+        )
+        traveler_units = max(1.0, traveler_units)
+        head_count = max(1, head_count)
+
+        days = max(1, request.days)
+        nights = max(1, request.days - 1)
+        room_count = max(1, math.ceil(head_count / 2))
+
+        accommodation_low = int(round(room_count * nights * profile["accommodation"][0]))
+        accommodation_high = int(round(room_count * nights * profile["accommodation"][1]))
+        transport_low = int(round(traveler_units * days * profile["transport"][0]))
+        transport_high = int(round(traveler_units * days * profile["transport"][1]))
+        food_low = int(round(traveler_units * days * profile["food"][0]))
+        food_high = int(round(traveler_units * days * profile["food"][1]))
+        tickets_low = int(round(traveler_units * days * profile["tickets"][0]))
+        tickets_high = int(round(traveler_units * days * profile["tickets"][1]))
+        extras_low = int(round(traveler_units * profile["extras"][0]))
+        extras_high = int(round(traveler_units * profile["extras"][1]))
+
+        total_low = accommodation_low + transport_low + food_low + tickets_low + extras_low
+        total_high = accommodation_high + transport_high + food_high + tickets_high + extras_high
+
+        sorted_days = sorted(plan.days, key=lambda item: item.day_number)
+        nightly_low, nightly_high = profile["accommodation"]
+        updated_stays = [
+            stay.model_copy(
+                update={
+                    "nightly_budget": f"¥{nightly_low:,}-¥{nightly_high:,}/间夜",
+                }
+            )
+            for stay in plan.stay_recommendations
+        ]
+
+        return plan.model_copy(
+            update={
+                "estimated_budget": BudgetBreakdown(
+                    currency="CNY",
+                    accommodation=self._format_budget_range(accommodation_low, accommodation_high),
+                    transport=self._format_budget_range(transport_low, transport_high),
+                    food=self._format_budget_range(food_low, food_high),
+                    tickets=self._format_budget_range(tickets_low, tickets_high),
+                    extras=self._format_budget_range(extras_low, extras_high),
+                    total_estimate=self._format_budget_range(total_low, total_high),
+                ),
+                "stay_recommendations": updated_stays,
+                "days": sorted_days,
+            }
+        )
+
+    def _format_budget_range(self, low: int, high: int) -> str:
+        floor = max(0, min(low, high))
+        ceil = max(0, max(low, high))
+        return f"¥{floor:,}-¥{ceil:,}"
 
     def _fallback_initial_plan(self, request: TripPlanningRequest) -> InitialPlanDraft:
         interest_pool = request.interests or ["城市地标", "本地文化", "特色美食", "休闲漫游"]
