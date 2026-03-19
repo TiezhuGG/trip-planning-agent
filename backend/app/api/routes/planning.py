@@ -1,5 +1,7 @@
 ﻿from datetime import datetime
 
+from functools import lru_cache
+
 from fastapi import APIRouter, HTTPException
 
 from app.config import get_settings
@@ -9,6 +11,7 @@ from app.services.planner import TravelPlannerService
 router = APIRouter(tags=["planning"])
 
 
+@lru_cache
 def get_planner_service() -> TravelPlannerService:
     return TravelPlannerService(get_settings())
 

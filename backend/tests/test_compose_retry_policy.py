@@ -172,3 +172,36 @@ def test_compose_fails_after_exhausting_retries() -> None:
 
     with pytest.raises(RuntimeError):
         asyncio.run(client.compose_plan(request, initial_plan, context, []))
+
+
+def test_finalize_composed_plan_normalizes_meal_venue_alias() -> None:
+    client = TravelAIClient(Settings())
+    request = _request(days=2)
+    context = _context(days=2)
+    context.restaurants = []
+
+    payload = _plan_payload(days=2)
+    payload["days"][0]["meals"] = [
+        {
+            "meal_type": "早餐",
+            "venue": "Alias Breakfast",
+            "estimated_cost": "50",
+        }
+    ]
+    payload["days"][1]["meals"] = [
+        {
+            "meal_type": "lunch",
+            "venue_name": "Lunch Place",
+            "estimated_cost": "80",
+        }
+    ]
+
+    plan = client._finalize_composed_plan(request=request, context=context, payload=payload)
+    assert plan.days[0].meals[0].meal_type == "breakfast"
+    assert plan.days[0].meals[0].venue_name == "Alias Breakfast"
+
+
+def test_compose_retryable_error_includes_validation_missing_fields() -> None:
+    client = TravelAIClient(Settings())
+    exc = ValueError("ValidationError: Field required: days.1.meals.0.venue_name")
+    assert client._is_retryable_compose_error(exc) is True

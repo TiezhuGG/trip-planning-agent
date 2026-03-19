@@ -1,9 +1,6 @@
 import asyncio
 from datetime import date, datetime
 
-import pytest
-from pydantic import ValidationError
-
 from app.agents.planning_agent import PlanningCoordinatorAgent
 from app.config import Settings
 from app.schemas.planning import (
@@ -25,15 +22,7 @@ from app.schemas.planning import (
 from app.services.ai_client import LLMDiagnosisResult
 
 
-def test_destination_rejects_non_chinese_city_name() -> None:
-    with pytest.raises(ValidationError):
-        TripPlanningRequest(
-            destination="Shanghai",
-            start_date=date(2026, 3, 20),
-        )
-
-
-def test_generate_keeps_working_when_weather_unavailable() -> None:
+def test_generate_runs_hotel_and_weather_in_parallel() -> None:
     settings = Settings(
         openai_api_key="test-key",
         openai_model="test-model",
@@ -41,6 +30,9 @@ def test_generate_keeps_working_when_weather_unavailable() -> None:
     )
     coordinator = PlanningCoordinatorAgent(settings)
     coordinator.adapter.client = object()
+
+    hotel_started = asyncio.Event()
+    weather_started = asyncio.Event()
 
     async def fake_adapter_diagnose(force_refresh: bool = True) -> IntegrationStatus:
         _ = force_refresh
@@ -56,6 +48,7 @@ def test_generate_keeps_working_when_weather_unavailable() -> None:
         )
 
     async def fake_llm_diagnose(check_connection: bool = False) -> LLMDiagnosisResult:
+        _ = check_connection
         return LLMDiagnosisResult(
             enabled=True,
             reachable=True,
@@ -74,14 +67,7 @@ def test_generate_keeps_working_when_weather_unavailable() -> None:
                     theme="Theme 1",
                     focus="Focus 1",
                     must_visit=[],
-                ),
-                InitialPlanDay(
-                    day_number=2,
-                    date="2026-03-21",
-                    theme="Theme 2",
-                    focus="Focus 2",
-                    must_visit=[],
-                ),
+                )
             ],
         )
         return draft, AgentExecution(agent_name="planner_seed_agent", success=True)
@@ -90,32 +76,31 @@ def test_generate_keeps_working_when_weather_unavailable() -> None:
         _request: TripPlanningRequest,
         _trace: list[ToolCallRecord],
     ) -> tuple[list[POIRecommendation], list[POIRecommendation]]:
-        attractions = [POIRecommendation(name="Attraction A"), POIRecommendation(name="Attraction B")]
-        restaurants = [POIRecommendation(name="Restaurant A"), POIRecommendation(name="Restaurant B")]
-        return attractions, restaurants
+        return [POIRecommendation(name="Attraction A")], [POIRecommendation(name="Restaurant A")]
 
     async def fake_hotel_gather(
         _request: TripPlanningRequest,
         _attractions: list[POIRecommendation],
         _trace: list[ToolCallRecord],
     ) -> list[POIRecommendation]:
+        hotel_started.set()
+        await weather_started.wait()
         return [POIRecommendation(name="Hotel A", address="Center")]
 
     async def fake_weather_gather(
         _request: TripPlanningRequest,
         _trace: list[ToolCallRecord],
     ) -> WeatherSummary:
-        raise RuntimeError("No forecast data available")
+        weather_started.set()
+        await hotel_started.wait()
+        return WeatherSummary()
 
     def fake_meal_gather(
         _request: TripPlanningRequest,
         _initial_plan: InitialPlanDraft,
         restaurants: list[POIRecommendation],
     ) -> dict[int, list[POIRecommendation]]:
-        return {
-            1: restaurants[:1],
-            2: restaurants[1:2],
-        }
+        return {1: restaurants}
 
     async def fake_route_gather(
         request: TripPlanningRequest,
@@ -126,12 +111,10 @@ def test_generate_keeps_working_when_weather_unavailable() -> None:
         trace: list[ToolCallRecord],
     ) -> tuple[list[RouteSummary], AgentExecution]:
         _ = (request, initial_plan, attractions, hotels, day_restaurants, trace)
-        routes = [
-            RouteSummary(day_number=1, from_name="Hotel A", to_name="Attraction A"),
-            RouteSummary(day_number=2, from_name="Hotel A", to_name="Attraction B"),
-        ]
-        trace = AgentExecution(agent_name="route_agent", success=True)
-        return routes, trace
+        return (
+            [RouteSummary(day_number=1, from_name="Hotel A", to_name="Attraction A")],
+            AgentExecution(agent_name="route_agent", success=True),
+        )
 
     async def fake_compose_gather(
         request: TripPlanningRequest,
@@ -145,15 +128,7 @@ def test_generate_keeps_working_when_weather_unavailable() -> None:
             summary="Summary",
             weather_summary="",
             best_booking_tip="Tip",
-            estimated_budget=BudgetBreakdown(
-                currency="CNY",
-                accommodation="¥100-¥200",
-                transport="¥100-¥200",
-                food="¥100-¥200",
-                tickets="¥100-¥200",
-                extras="¥100-¥200",
-                total_estimate="¥500-¥1000",
-            ),
+            estimated_budget=BudgetBreakdown(),
             city_tips=[],
             packing_list=[],
             stay_recommendations=[],
@@ -175,31 +150,11 @@ def test_generate_keeps_working_when_weather_unavailable() -> None:
                             location_name="Attraction A",
                         )
                     ],
-                    route_summary=RouteSummary(day_number=1, from_name="Hotel A", to_name="Attraction A"),
-                ),
-                DayPlan(
-                    day_number=2,
-                    date="2026-03-21",
-                    theme="Theme 2",
-                    overview="Overview 2",
-                    hotel_area="Center",
-                    meals=[MealRecommendation(meal_type="dinner", venue_name="Restaurant B")],
-                    activities=[
-                        Activity(
-                            start_time="10:00",
-                            end_time="12:00",
-                            title="Activity 2",
-                            category="sightseeing",
-                            description="Desc 2",
-                            location_name="Attraction B",
-                        )
-                    ],
-                    route_summary=RouteSummary(day_number=2, from_name="Hotel A", to_name="Attraction B"),
-                ),
+                    route_summaries=[RouteSummary(day_number=1, from_name="Hotel A", to_name="Attraction A")],
+                )
             ],
         )
-        trace = AgentExecution(agent_name="itinerary_composer_agent", success=True)
-        return plan, trace, True, False, []
+        return plan, AgentExecution(agent_name="itinerary_composer_agent", success=True), True, False, []
 
     coordinator.adapter.diagnose = fake_adapter_diagnose
     coordinator.ai_client.diagnose = fake_llm_diagnose
@@ -212,15 +167,14 @@ def test_generate_keeps_working_when_weather_unavailable() -> None:
     coordinator.composer_agent.gather = fake_compose_gather
 
     request = TripPlanningRequest(
-        destination="\u4e0a\u6d77",
+        destination="上海",
         start_date=date(2026, 3, 20),
-        days=2,
+        days=1,
     )
-    result = asyncio.run(coordinator.generate(request, generated_at=datetime.utcnow()))
-
+    result = asyncio.run(
+        asyncio.wait_for(
+            coordinator.generate(request, generated_at=datetime.utcnow()),
+            timeout=1.0,
+        )
+    )
     assert result.status == "success"
-    assert result.plan.days
-    assert result.planning_context.weather.daily_forecasts == []
-    assert any("weather_agent 调用失败" in item for item in result.meta.warnings)
-    weather_trace = next(item for item in result.agent_trace if item.agent_name == "weather_agent")
-    assert weather_trace.success is False

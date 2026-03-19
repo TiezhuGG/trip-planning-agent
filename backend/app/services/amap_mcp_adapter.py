@@ -2,6 +2,8 @@
 
 import asyncio
 import re
+import time
+from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import Any
 
@@ -39,7 +41,15 @@ class AmapMCPAdapter:
             else None
         )
         self._tool_catalog: list[dict[str, Any]] | None = None
+        self._tool_catalog_cached_at: float = 0.0
+        self._tool_catalog_ttl_seconds = 60.0
         self._resolved_tools: dict[str, str] = {}
+        self._poi_detail_concurrency = 4
+        self._route_location_cache: dict[str, str] = {}
+        self._route_location_cache_limit = 512
+        self._route_retry_attempts = 3
+        self._route_retry_base_delay_seconds = 0.6
+        self._geocode_retry_attempts = 3
 
     @property
     def has_client(self) -> bool:
@@ -50,7 +60,15 @@ class AmapMCPAdapter:
     ) -> tuple[PlanningContext, list[ToolCallRecord]]:
         return self._mock_context(request)
 
-    async def diagnose(self) -> IntegrationStatus:
+    @asynccontextmanager
+    async def request_scope(self):
+        if self.client is None or not hasattr(self.client, "session_scope"):
+            yield
+            return
+        async with self.client.session_scope():
+            yield
+
+    async def diagnose(self, force_refresh: bool = True) -> IntegrationStatus:
         warnings: list[str] = []
         available_tools: list[str] = []
         resolved_tools: dict[str, str] = {}
@@ -60,7 +78,7 @@ class AmapMCPAdapter:
         if self.client is not None:
             try:
                 catalog = await asyncio.wait_for(
-                    self._ensure_tool_catalog(force_refresh=True),
+                    self._ensure_tool_catalog(force_refresh=force_refresh),
                     timeout=self.settings.amap_mcp_timeout_seconds + 2,
                 )
                 available_tools = [item.get("name", "") for item in catalog if item.get("name")]
@@ -110,7 +128,7 @@ class AmapMCPAdapter:
         trace: list[ToolCallRecord] = []
         try:
             attractions = await self.fetch_attractions(request, trace)
-            restaurants = await self.fetch_restaurants(request, trace)
+            restaurants = await self.fetch_restaurants(request, trace, anchor_pois=attractions)
             hotels = await self.fetch_hotels(request, trace)
             weather = await self.fetch_weather(request, trace)
             return (
@@ -148,9 +166,17 @@ class AmapMCPAdapter:
         return await self._enrich_pois_with_details(merged, trace)
 
     async def fetch_restaurants(
-        self, request: TripPlanningRequest, trace: list[ToolCallRecord]
+        self,
+        request: TripPlanningRequest,
+        trace: list[ToolCallRecord],
+        anchor_pois: list[POIRecommendation] | None = None,
     ) -> list[POIRecommendation]:
         queries: list[str] = []
+        for poi in (anchor_pois or [])[:4]:
+            if poi.name:
+                queries.append(f"{poi.name} 附近 餐厅")
+            if poi.district:
+                queries.append(f"{poi.district} 美食")
         for preference in request.dining_preferences[:3]:
             queries.extend([preference, f"{preference} 餐厅"])
         queries.extend(["本地美食", "特色餐厅", "热门餐厅"])
@@ -161,7 +187,12 @@ class AmapMCPAdapter:
             fallback_kind="餐厅",
             target_count=8,
         )
-        return await self._enrich_pois_with_details(merged, trace)
+        enriched = await self._enrich_pois_with_details(merged, trace)
+        return self._sort_restaurants_for_route(
+            restaurants=enriched,
+            city=request.destination,
+            anchor_pois=anchor_pois or [],
+        )
 
     async def fetch_hotels(
         self,
@@ -204,24 +235,29 @@ class AmapMCPAdapter:
 
         errors: list[str] = []
         for candidate_mode in self._route_mode_candidates(mode):
-            if candidate_mode in {"transit", "driving", "walking"}:
-                try:
-                    raw = await self._plan_route_via_web_service(candidate_mode, origin, destination, waypoints, trace)
-                    return self._normalize_route(raw, day_number, origin, destination, waypoints, candidate_mode)
-                except Exception as exc:
-                    errors.append(f"{candidate_mode}_webservice: {exc}")
-
             for tool_name, arguments in self._build_route_tool_attempts(candidate_mode, origin, destination):
                 try:
-                    raw = await self._call_tool_for_purpose(
-                        "route_plan",
-                        arguments,
-                        trace,
-                        tool_name_override=tool_name,
+                    raw = await self._call_route_tool_with_retry(
+                        tool_name=tool_name,
+                        arguments=arguments,
+                        trace=trace,
                     )
                     return self._normalize_route(raw, day_number, origin, destination, waypoints, candidate_mode)
                 except Exception as exc:
                     errors.append(f"{candidate_mode}/{tool_name}: {exc}")
+
+            if candidate_mode in {"transit", "driving", "walking"}:
+                try:
+                    raw = await self._call_route_webservice_with_retry(
+                        mode=candidate_mode,
+                        origin=origin,
+                        destination=destination,
+                        waypoints=waypoints,
+                        trace=trace,
+                    )
+                    return self._normalize_route(raw, day_number, origin, destination, waypoints, candidate_mode)
+                except Exception as exc:
+                    errors.append(f"{candidate_mode}_webservice: {exc}")
 
         raise MCPProtocolError(f"第 {day_number} 天路线规划失败: {'；'.join(errors[:4])}")
 
@@ -353,13 +389,16 @@ class AmapMCPAdapter:
         destination: POIRecommendation,
     ) -> list[tuple[str, dict[str, Any]]]:
         attempts: list[tuple[str, dict[str, Any]]] = []
-        coordinate_tool = self._resolve_route_tool_name(mode, coordinate=True)
-        if coordinate_tool and self._has_coordinates(origin) and self._has_coordinates(destination):
-            attempts.append((coordinate_tool, self._build_route_coordinate_arguments(origin, destination)))
+        has_coordinates = self._has_coordinates(origin) and self._has_coordinates(destination)
+        if has_coordinates:
+            coordinate_tool = self._resolve_route_tool_name(mode, coordinate=True)
+            if coordinate_tool:
+                attempts.append((coordinate_tool, self._build_route_coordinate_arguments(origin, destination)))
 
-        address_tool = self._resolve_route_tool_name(mode, coordinate=False)
-        if address_tool:
-            attempts.append((address_tool, self._build_route_arguments(origin, destination)))
+        if not attempts:
+            address_tool = self._resolve_route_tool_name(mode, coordinate=False)
+            if address_tool:
+                attempts.append((address_tool, self._build_route_arguments(origin, destination)))
 
         deduped: list[tuple[str, dict[str, Any]]] = []
         seen: set[tuple[str, str]] = set()
@@ -374,6 +413,11 @@ class AmapMCPAdapter:
         if poi.longitude is not None and poi.latitude is not None:
             return f"{poi.longitude},{poi.latitude}"
 
+        cache_key = self._route_location_cache_key(poi)
+        cached = self._route_location_cache.get(cache_key)
+        if cached:
+            return cached
+
         api_key = self._amap_web_service_key()
         if not api_key:
             raise MCPProtocolError("缺少高德 Web Service Key，无法为路线规划补做 geocode。")
@@ -381,26 +425,102 @@ class AmapMCPAdapter:
         city = self._normalize_city_name(poi.district)
         async with httpx.AsyncClient(timeout=15, trust_env=False) as client:
             for candidate in self._route_address_candidates(poi):
-                response = await client.get(
-                    "https://restapi.amap.com/v3/geocode/geo",
-                    params={
-                        "key": api_key,
-                        "address": candidate,
-                        "city": city,
-                    },
-                )
-                response.raise_for_status()
-                payload = response.json()
-                if str(payload.get("status", "")) != "1":
-                    continue
-                geocodes = payload.get("geocodes")
-                if isinstance(geocodes, list) and geocodes and geocodes[0].get("location"):
-                    return str(geocodes[0]["location"])
+                for attempt in range(self._geocode_retry_attempts):
+                    response = await client.get(
+                        "https://restapi.amap.com/v3/geocode/geo",
+                        params={
+                            "key": api_key,
+                            "address": candidate,
+                            "city": city,
+                        },
+                    )
+                    response.raise_for_status()
+                    payload = response.json()
+                    if str(payload.get("status", "")) == "1":
+                        geocodes = payload.get("geocodes")
+                        if isinstance(geocodes, list) and geocodes and geocodes[0].get("location"):
+                            location = str(geocodes[0]["location"])
+                            self._cache_route_location(cache_key, location)
+                            return location
+
+                    info_text = str(payload.get("info", payload.get("infocode", "")))
+                    if attempt < self._geocode_retry_attempts - 1 and self._is_rate_limit_text(info_text):
+                        await asyncio.sleep(self._retry_delay_seconds(attempt))
+                        continue
+                    break
 
         raise MCPProtocolError(f"未能为地址解析坐标: {self._route_address(poi)}")
 
     def _amap_web_service_key(self) -> str:
         return str(self.settings.amap_mcp_env.get("AMAP_MAPS_API_KEY", "")).strip()
+
+    async def _call_route_tool_with_retry(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        trace: list[ToolCallRecord],
+    ) -> Any:
+        last_exc: Exception | None = None
+        for attempt in range(self._route_retry_attempts):
+            try:
+                return await self._call_tool_for_purpose(
+                    "route_plan",
+                    arguments,
+                    trace,
+                    tool_name_override=tool_name,
+                )
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= self._route_retry_attempts - 1 or not self._is_rate_limit_error(exc):
+                    raise
+                await asyncio.sleep(self._retry_delay_seconds(attempt))
+        if last_exc is not None:
+            raise last_exc
+        raise MCPProtocolError(f"路线工具调用失败: {tool_name}")
+
+    async def _call_route_webservice_with_retry(
+        self,
+        mode: str,
+        origin: POIRecommendation,
+        destination: POIRecommendation,
+        waypoints: list[POIRecommendation],
+        trace: list[ToolCallRecord],
+    ) -> dict[str, Any]:
+        last_exc: Exception | None = None
+        for attempt in range(self._route_retry_attempts):
+            try:
+                return await self._plan_route_via_web_service(mode, origin, destination, waypoints, trace)
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= self._route_retry_attempts - 1 or not self._is_rate_limit_error(exc):
+                    raise
+                await asyncio.sleep(self._retry_delay_seconds(attempt))
+        if last_exc is not None:
+            raise last_exc
+        raise MCPProtocolError(f"高德路线 Web Service 调用失败: {mode}")
+
+    def _retry_delay_seconds(self, attempt: int) -> float:
+        return self._route_retry_base_delay_seconds * (attempt + 1)
+
+    def _is_rate_limit_error(self, exc: Exception) -> bool:
+        if self._is_rate_limit_text(str(exc)):
+            return True
+        cause = exc.__cause__ or exc.__context__
+        if isinstance(cause, Exception) and cause is not exc:
+            return self._is_rate_limit_error(cause)
+        return False
+
+    def _is_rate_limit_text(self, text: str) -> bool:
+        if not text:
+            return False
+        upper = text.upper()
+        markers = (
+            "CUQPS_HAS_EXCEEDED_THE_LIMIT",
+            "QPS_HAS_EXCEEDED_THE_LIMIT",
+            "OVER_QUERY_LIMIT",
+            "DAILY_QUERY_OVER_LIMIT",
+        )
+        return any(marker in upper for marker in markers)
 
     async def _call_tool_for_purpose(
         self,
@@ -460,7 +580,12 @@ class AmapMCPAdapter:
     async def _ensure_tool_catalog(self, force_refresh: bool = False) -> list[dict[str, Any]]:
         if self.client is None:
             return []
-        if self._tool_catalog is not None and not force_refresh:
+        now = time.monotonic()
+        if (
+            self._tool_catalog is not None
+            and not force_refresh
+            and (now - self._tool_catalog_cached_at) <= self._tool_catalog_ttl_seconds
+        ):
             return self._tool_catalog
 
         result = await asyncio.wait_for(
@@ -471,6 +596,8 @@ class AmapMCPAdapter:
         if not isinstance(tools, list):
             tools = []
         self._tool_catalog = [item for item in tools if isinstance(item, dict)]
+        self._tool_catalog_cached_at = now
+        self._resolved_tools = {}
         return self._tool_catalog
 
     def _resolve_tool_name(self, purpose: str, strict: bool = True) -> str | None:
@@ -550,25 +677,30 @@ class AmapMCPAdapter:
         if not detail_tool_name:
             return pois
 
-        enriched: list[POIRecommendation] = []
-        for poi in pois[:12]:
+        semaphore = asyncio.Semaphore(self._poi_detail_concurrency)
+        candidates = pois[:12]
+
+        async def _enrich_one(index: int, poi: POIRecommendation) -> tuple[int, POIRecommendation]:
             if not poi.poi_id:
-                enriched.append(poi)
-                continue
+                return index, poi
 
-            try:
-                raw = await self._call_tool_for_purpose(
-                    "poi_search",
-                    {"id": poi.poi_id},
-                    trace,
-                    tool_name_override=detail_tool_name,
-                )
-                detail_poi = self._normalize_poi_detail(raw, poi)
-                enriched.append(detail_poi)
-            except Exception:
-                enriched.append(poi)
+            async with semaphore:
+                try:
+                    raw = await self._call_tool_for_purpose(
+                        "poi_search",
+                        {"id": poi.poi_id},
+                        trace,
+                        tool_name_override=detail_tool_name,
+                    )
+                    return index, self._normalize_poi_detail(raw, poi)
+                except Exception:
+                    return index, poi
 
-        return enriched
+        enriched_items = await asyncio.gather(
+            *[_enrich_one(index, poi) for index, poi in enumerate(candidates)]
+        )
+        enriched_items.sort(key=lambda item: item[0])
+        return [item[1] for item in enriched_items]
 
     def _resolve_route_tool_name(self, mode: str, coordinate: bool | None = None) -> str | None:
         catalog = self._tool_catalog or []
@@ -618,7 +750,7 @@ class AmapMCPAdapter:
             "transit": ["transit", "walking", "driving"],
             "walking": ["walking", "transit", "driving"],
             "bicycling": ["bicycling", "walking", "driving"],
-            "driving": ["driving", "walking"],
+            "driving": ["driving"],
         }.get(preferred_mode, [preferred_mode, "walking", "driving"])
         seen: set[str] = set()
         ordered: list[str] = []
@@ -1256,6 +1388,23 @@ class AmapMCPAdapter:
             return f"{poi.district}{poi.name}"
         return poi.name
 
+    def _route_location_cache_key(self, poi: POIRecommendation) -> str:
+        if poi.poi_id:
+            return f"poi:{poi.poi_id}"
+        district = (poi.district or "").strip()
+        address = (poi.address or "").strip()
+        name = poi.name.strip()
+        return f"addr:{district}|{address}|{name}"
+
+    def _cache_route_location(self, key: str, location: str) -> None:
+        if key in self._route_location_cache:
+            self._route_location_cache[key] = location
+            return
+        if len(self._route_location_cache) >= self._route_location_cache_limit:
+            oldest_key = next(iter(self._route_location_cache))
+            self._route_location_cache.pop(oldest_key, None)
+        self._route_location_cache[key] = location
+
     def _build_hotel_queries(
         self,
         request: TripPlanningRequest,
@@ -1277,10 +1426,56 @@ class AmapMCPAdapter:
         anchor_pois: list[POIRecommendation],
         city: str,
     ) -> list[POIRecommendation]:
-        if anchor_pois:
-            center = self._anchor_center(anchor_pois)
-            return sorted(hotels, key=lambda poi: self._distance_score(poi, center))
-        return self._sort_pois_by_city_center(city, hotels)
+        center = self._anchor_center(anchor_pois) if anchor_pois else self._city_center(city)
+
+        def _is_stay_hotel(poi: POIRecommendation) -> bool:
+            name = poi.name
+            tags = [str(tag) for tag in poi.tags]
+            name_hit = any(word in name for word in ("酒店", "宾馆", "旅馆", "民宿", "客栈"))
+            tag_hit = any(tag.startswith(("10", "100")) for tag in tags)
+            return name_hit or tag_hit
+
+        def _is_non_stay_facility(poi: POIRecommendation) -> bool:
+            name = poi.name
+            return any(
+                word in name
+                for word in ("博物馆", "服务中心", "政务", "体育馆", "售票处", "康复中心", "汽车", "4S")
+            )
+
+        return sorted(
+            hotels,
+            key=lambda poi: (
+                0 if _is_stay_hotel(poi) else 1,
+                0 if self._has_coordinates(poi) else 1,
+                1 if _is_non_stay_facility(poi) else 0,
+                self._distance_score(poi, center),
+            ),
+        )
+
+    def _sort_restaurants_for_route(
+        self,
+        restaurants: list[POIRecommendation],
+        city: str,
+        anchor_pois: list[POIRecommendation],
+    ) -> list[POIRecommendation]:
+        center = self._anchor_center(anchor_pois) if anchor_pois else self._city_center(city)
+
+        def _is_restaurant(poi: POIRecommendation) -> bool:
+            name = poi.name
+            tags = [str(tag) for tag in poi.tags]
+            name_hit = any(word in name for word in ("餐厅", "饭店", "酒楼", "馆", "小吃", "奶茶", "咖啡"))
+            tag_hit = any(tag.startswith("05") for tag in tags)
+            return name_hit or tag_hit
+
+        return sorted(
+            restaurants,
+            key=lambda poi: (
+                0 if self._has_coordinates(poi) else 1,
+                0 if bool((poi.district or "").strip()) else 1,
+                0 if _is_restaurant(poi) else 1,
+                self._distance_score(poi, center),
+            ),
+        )
 
     def _anchor_center(self, pois: list[POIRecommendation]) -> GeoPoint:
         coordinates = [(poi.longitude, poi.latitude) for poi in pois if poi.longitude is not None and poi.latitude is not None]

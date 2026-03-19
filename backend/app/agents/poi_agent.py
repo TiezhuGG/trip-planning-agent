@@ -10,5 +10,9 @@ class SightseeingAgent:
         self, request: TripPlanningRequest, trace: list[ToolCallRecord]
     ) -> tuple[list[POIRecommendation], list[POIRecommendation]]:
         attractions = await self.adapter.fetch_attractions(request, trace)
-        restaurants = await self.adapter.fetch_restaurants(request, trace)
+        restaurants = await self.adapter.fetch_restaurants(
+            request,
+            trace,
+            anchor_pois=attractions,
+        )
         return attractions, restaurants

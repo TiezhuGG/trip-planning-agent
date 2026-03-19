@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import os
 import shutil
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +29,10 @@ class MCPStdioClient:
         self.inherit_proxy_env = inherit_proxy_env
         self.resolved_command = command
         self.stderr_tail: list[str] = []
+        self._active_session: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
+            "mcp_active_session",
+            default=None,
+        )
 
     async def connect(self) -> None:
         self.resolved_command = self._resolve_command()
@@ -48,6 +54,44 @@ class MCPStdioClient:
     async def close(self) -> None:
         return
 
+    @asynccontextmanager
+    async def session_scope(self):
+        await self.connect()
+        active_session = self._active_session.get()
+        if active_session is not None:
+            yield
+            return
+
+        ClientSession, StdioServerParameters, stdio_client = self._load_sdk()
+
+        if self._is_windows_selector_policy():
+            raise MCPProtocolError(
+                "当前后端运行在 WindowsSelectorEventLoopPolicy 下，无法使用 stdio MCP 子进程。"
+                "这通常是因为使用了 uvicorn --reload。"
+                "请改用不带 --reload 的启动方式，或改造成独立的 HTTP/SSE MCP 服务。"
+            )
+
+        server_params = StdioServerParameters(
+            command=self.resolved_command,
+            args=self.args,
+            env=self._build_process_env(),
+        )
+        completed = False
+        try:
+            async with stdio_client(server_params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    token = self._active_session.set(session)
+                    try:
+                        yield
+                        completed = True
+                    finally:
+                        self._active_session.reset(token)
+        except Exception as exc:
+            if completed and self._contains_exception_type(exc, UnicodeDecodeError):
+                return
+            raise MCPProtocolError(f"MCP SDK 调用失败: {self._format_exception(exc)}") from exc
+
     def get_debug_snapshot(self) -> dict[str, Any]:
         return {
             "command": self.command,
@@ -57,6 +101,10 @@ class MCPStdioClient:
         }
 
     async def _run_with_session(self, operation):
+        active_session = self._active_session.get()
+        if active_session is not None:
+            return await operation(active_session)
+
         ClientSession, StdioServerParameters, stdio_client = self._load_sdk()
 
         if self._is_windows_selector_policy():
@@ -186,6 +234,8 @@ class MCPStdioClient:
 
     def _build_process_env(self) -> dict[str, str]:
         env = dict(os.environ)
+        env.setdefault("PYTHONUTF8", "1")
+        env.setdefault("PYTHONIOENCODING", "utf-8")
         if not self.inherit_proxy_env:
             for key in (
                 "HTTP_PROXY",
@@ -218,3 +268,16 @@ class MCPStdioClient:
         if isinstance(cause, Exception) and cause is not exc:
             return f"{base} -> {self._format_exception(cause)}"
         return base
+
+    def _contains_exception_type(self, exc: BaseException, target: type[BaseException]) -> bool:
+        if isinstance(exc, target):
+            return True
+        nested = getattr(exc, "exceptions", None)
+        if isinstance(nested, tuple):
+            for child in nested:
+                if isinstance(child, BaseException) and self._contains_exception_type(child, target):
+                    return True
+        cause = exc.__cause__ or exc.__context__
+        if isinstance(cause, BaseException) and cause is not exc:
+            return self._contains_exception_type(cause, target)
+        return False
