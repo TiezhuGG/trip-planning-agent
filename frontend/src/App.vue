@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
@@ -756,13 +756,13 @@ function budgetLabel(value: TripPlanningRequest["budget_level"]) {
                     景点信息和地图标记
                   </h2>
                 </div>
-                <span
+                <!-- <span
                   class="rounded-full border border-[#d6e2ec] bg-[#eef4f9] px-4 py-2 text-sm text-[#35516b]"
                   >{{
                     result.planning_context.attractions.length
                   }}
                   个景点点位</span
-                >
+                > -->
               </div>
               <div class="mt-5">
                 <AmapMap

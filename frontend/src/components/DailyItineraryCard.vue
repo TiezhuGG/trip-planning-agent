@@ -143,7 +143,7 @@ function formatCny(value: number, suffix = "") {
             <div v-else class="mt-3 text-slate-500">暂无路线信息</div>
           </div>
 
-          <div class="rounded-[22px] border border-[#e3ebf2] bg-[#f8fbfd] px-4 py-4 text-sm text-slate-600 shadow-sm">
+          <!-- <div class="rounded-[22px] border border-[#e3ebf2] bg-[#f8fbfd] px-4 py-4 text-sm text-slate-600 shadow-sm">
             <div class="font-medium text-ink">天气与体感</div>
             <div v-if="weather" class="mt-3">
               <div>
@@ -157,7 +157,7 @@ function formatCny(value: number, suffix = "") {
               </div>
             </div>
             <div v-else class="mt-3 text-slate-500">暂无天气信息</div>
-          </div>
+          </div> -->
 
           <div class="rounded-[22px] border border-[#e3ebf2] bg-[#f8fbfd] px-4 py-4 text-sm text-slate-600 shadow-sm">
             <div class="font-medium text-ink">餐饮推荐</div>
