@@ -24,4 +24,4 @@ services:
     depends_on:
       - backend
     ports:
-      - "${FRONTEND_PUBLIC_PORT:-8081}:80"
+      - "${FRONTEND_PUBLIC_PORT:-8080}:80"
