@@ -1,6 +1,20 @@
-﻿import type { IntegrationStatus, PlanningResponse, TripPlanningRequest } from '../types/planning'
+import type { IntegrationStatus, PlanningResponse, TripPlanningRequest } from '../types/planning'
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''
+function trimTrailingSlash(value: string) {
+  return value.replace(/\/+$/, '')
+}
+
+function resolveApiBaseUrl() {
+  const explicitBase = String(import.meta.env.VITE_API_BASE_URL ?? '').trim()
+  if (explicitBase) return trimTrailingSlash(explicitBase)
+
+  const publicBase = String(import.meta.env.BASE_URL ?? '').trim()
+  if (!publicBase || publicBase === '/') return ''
+
+  return trimTrailingSlash(publicBase)
+}
+
+const API_BASE_URL = resolveApiBaseUrl()
 
 export async function getIntegrationStatus(): Promise<IntegrationStatus> {
   const response = await fetch(`${API_BASE_URL}/api/v1/plans/integrations/status`)
