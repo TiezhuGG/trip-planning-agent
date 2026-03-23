@@ -7,5 +7,6 @@ venv/
 node_modules/
 dist/
 coverage/
-/docs
+/docs/**
+!/docs/github-actions-auto-deploy.md
 backend/scripts/
