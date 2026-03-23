@@ -63,8 +63,9 @@ jobs:
           set -eu
           PORT="${PROD_PORT:-22}"
           mkdir -p "$HOME/.ssh"
-          printf '%s\n' "$PROD_SSH_KEY" > "$HOME/.ssh/deploy_key"
+          printf '%s\n' "$PROD_SSH_KEY" | tr -d '\r' > "$HOME/.ssh/deploy_key"
           chmod 600 "$HOME/.ssh/deploy_key"
+          ssh-keygen -y -f "$HOME/.ssh/deploy_key" > /dev/null
           ssh-keyscan -p "$PORT" -H "$PROD_HOST" >> "$HOME/.ssh/known_hosts"
 
       - name: Deploy via SSH
