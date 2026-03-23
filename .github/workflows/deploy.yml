@@ -1,23 +1,19 @@
 name: Deploy to Production
 
-# 触发条件：推送事件，分支为 main
 on:
   push:
     branches:
       - main
 
-# 权限：只读取仓库内容
 permissions:
   contents: read
 
-# 并发控制：只允许一个部署任务在运行
 concurrency:
   group: deploy-production
   cancel-in-progress: true
 
 jobs:
   deploy:
-    # 表示这个 job 在 GitHub 提供的 Ubuntu Runner 上执行
     runs-on: ubuntu-latest
     env:
       DEPLOY_BRANCH: main
@@ -54,7 +50,9 @@ jobs:
 
       - name: Run backend tests
         working-directory: backend
-        run: pytest -q tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend
+        run: python -m pytest -q tests
 
       - name: Prepare SSH
         env:
