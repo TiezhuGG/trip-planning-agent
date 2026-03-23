@@ -45,6 +45,8 @@ class AmapMCPAdapter:
         self._tool_catalog_ttl_seconds = 60.0
         self._resolved_tools: dict[str, str] = {}
         self._poi_detail_concurrency = 4
+        self._poi_detail_limit = 8
+        self._poi_detail_cache: dict[str, POIRecommendation] = {}
         self._route_location_cache: dict[str, str] = {}
         self._route_location_cache_limit = 512
         self._route_retry_attempts = 3
@@ -669,6 +671,7 @@ class AmapMCPAdapter:
         self,
         pois: list[POIRecommendation],
         trace: list[ToolCallRecord],
+        category: str | None = None,
     ) -> list[POIRecommendation]:
         if self.client is None or not pois:
             return pois
@@ -678,29 +681,59 @@ class AmapMCPAdapter:
             return pois
 
         semaphore = asyncio.Semaphore(self._poi_detail_concurrency)
-        candidates = pois[:12]
+        limit = min(len(pois), self._poi_detail_limit)
+        candidates = pois[:limit]
+        pending: dict[str, asyncio.Task[POIRecommendation]] = {}
 
         async def _enrich_one(index: int, poi: POIRecommendation) -> tuple[int, POIRecommendation]:
             if not poi.poi_id:
                 return index, poi
+            if self._poi_detail_is_complete(poi, category=category):
+                return index, poi
+            cached = self._poi_detail_cache.get(poi.poi_id)
+            if cached is not None:
+                return index, cached
 
-            async with semaphore:
-                try:
+            async def _fetch_detail() -> POIRecommendation:
+                async with semaphore:
                     raw = await self._call_tool_for_purpose(
                         "poi_search",
                         {"id": poi.poi_id},
                         trace,
                         tool_name_override=detail_tool_name,
                     )
-                    return index, self._normalize_poi_detail(raw, poi)
-                except Exception:
-                    return index, poi
+                    enriched = self._normalize_poi_detail(raw, poi)
+                    self._poi_detail_cache[poi.poi_id or ""] = enriched
+                    return enriched
+
+            try:
+                task = pending.get(poi.poi_id)
+                if task is None:
+                    task = asyncio.create_task(_fetch_detail())
+                    pending[poi.poi_id] = task
+                return index, await task
+            except Exception:
+                return index, poi
 
         enriched_items = await asyncio.gather(
             *[_enrich_one(index, poi) for index, poi in enumerate(candidates)]
         )
         enriched_items.sort(key=lambda item: item[0])
-        return [item[1] for item in enriched_items]
+        enriched_prefix = [item[1] for item in enriched_items]
+        return enriched_prefix + pois[limit:]
+
+    def _poi_detail_is_complete(
+        self,
+        poi: POIRecommendation,
+        category: str | None = None,
+    ) -> bool:
+        _ = category
+        return (
+            bool((poi.district or "").strip())
+            and bool(poi.tags)
+            and poi.longitude is not None
+            and poi.latitude is not None
+        )
 
     def _resolve_route_tool_name(self, mode: str, coordinate: bool | None = None) -> str | None:
         catalog = self._tool_catalog or []
