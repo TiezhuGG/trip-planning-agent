@@ -205,3 +205,59 @@ def test_compose_retryable_error_includes_validation_missing_fields() -> None:
     client = TravelAIClient(Settings())
     exc = ValueError("ValidationError: Field required: days.1.meals.0.venue_name")
     assert client._is_retryable_compose_error(exc) is True
+
+
+def test_compose_falls_back_on_provider_rate_limit() -> None:
+    client = TravelAIClient(Settings())
+    client.client = object()
+    request = _request(days=3)
+    initial_plan = _initial_plan(days=3)
+    context = _context(days=3)
+
+    async def fake_request_json_payload(*args, **kwargs):
+        _ = (args, kwargs)
+        raise ValueError(
+            "json_object: RateLimitError: Error code: 429 - "
+            "{'error': {'code': 'SetLimitExceeded', 'message': 'service has been paused'}}"
+        )
+
+    client._request_json_payload = fake_request_json_payload  # type: ignore[method-assign]
+
+    result = asyncio.run(client.compose_plan(request, initial_plan, context, []))
+
+    assert result.fallback_used is True
+    assert result.used_llm is False
+    assert len(result.plan.days) == 3
+    assert any("已切换到规则模板" in warning for warning in result.warnings)
+
+
+def test_compose_switches_to_backup_model_on_provider_rate_limit() -> None:
+    client = TravelAIClient(Settings())
+    primary = object()
+    backup = object()
+    request = _request(days=3)
+    initial_plan = _initial_plan(days=3)
+    context = _context(days=3)
+
+    client.client = primary
+    client.primary_model = "primary-model"
+    client.secondary_client = backup
+    client.secondary_model = "backup-model"
+
+    async def fake_compose_with_openai(*args, **kwargs):
+        _ = args
+        if kwargs["client"] is primary:
+            raise ValueError(
+                "json_object: RateLimitError: Error code: 429 - "
+                "{'error': {'code': 'SetLimitExceeded', 'message': 'service has been paused'}}"
+            )
+        return client._finalize_composed_plan(request, context, _plan_payload(days=3)), []
+
+    client._compose_with_openai = fake_compose_with_openai  # type: ignore[method-assign]
+
+    result = asyncio.run(client.compose_plan(request, initial_plan, context, []))
+
+    assert result.fallback_used is False
+    assert result.used_llm is True
+    assert len(result.plan.days) == 3
+    assert any("已切换到备用模型" in warning for warning in result.warnings)

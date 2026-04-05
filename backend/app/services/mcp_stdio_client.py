@@ -33,11 +33,15 @@ class MCPStdioClient:
             "mcp_active_session",
             default=None,
         )
+        self._candidate_commands: list[str] = []
 
     async def connect(self) -> None:
         self.resolved_command = self._resolve_command()
         if not self.resolved_command:
             raise MCPProtocolError("MCP command is empty.")
+        if not Path(self.resolved_command).exists() and shutil.which(self.resolved_command) is None:
+            candidates = f"；已检查: {' | '.join(self._candidate_commands)}" if self._candidate_commands else ""
+            raise MCPProtocolError(f"MCP 启动命令不存在: {self.command}{candidates}")
 
         self._load_sdk()
 
@@ -192,10 +196,12 @@ class MCPStdioClient:
 
     def _resolve_command(self) -> str:
         command = self.command.strip()
+        self._candidate_commands = []
         if not command:
             return ""
 
         command_path = Path(command)
+        self._candidate_commands.append(str(command_path))
         if command_path.is_absolute() and command_path.exists():
             return str(command_path)
 
@@ -227,6 +233,7 @@ class MCPStdioClient:
             ]
 
         for candidate in candidates:
+            self._candidate_commands.append(str(candidate))
             if candidate.exists():
                 return str(candidate)
 

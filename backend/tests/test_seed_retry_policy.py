@@ -77,3 +77,59 @@ def test_seed_fails_after_exhausting_retries() -> None:
         asyncio.run(client.build_initial_plan(request))
 
     assert calls["count"] == 5
+
+
+def test_seed_falls_back_on_provider_rate_limit() -> None:
+    client = TravelAIClient(Settings())
+    client.client = object()
+    request = _request(days=3)
+    calls = {"count": 0}
+
+    async def fake_request_json_payload(*args, **kwargs):
+        _ = (args, kwargs)
+        calls["count"] += 1
+        raise ValueError(
+            "json_object: RateLimitError: Error code: 429 - "
+            "{'error': {'code': 'SetLimitExceeded', 'message': 'service has been paused'}}"
+        )
+
+    client._request_json_payload = fake_request_json_payload  # type: ignore[method-assign]
+
+    result = asyncio.run(client.build_initial_plan(request))
+
+    assert result.fallback_used is True
+    assert result.used_llm is False
+    assert len(result.draft.days) == 3
+    assert calls["count"] == 1
+    assert any("已切换到规则模板" in warning for warning in result.warnings)
+
+
+def test_seed_switches_to_backup_model_on_provider_rate_limit() -> None:
+    client = TravelAIClient(Settings())
+    primary = object()
+    backup = object()
+    request = _request(days=3)
+    backup_client = TravelAIClient(Settings())
+
+    client.client = primary
+    client.primary_model = "primary-model"
+    client.secondary_client = backup
+    client.secondary_model = "backup-model"
+
+    async def fake_generate_initial_plan_with_openai(*args, **kwargs):
+        _ = args
+        if kwargs["client"] is primary:
+            raise ValueError(
+                "json_object: RateLimitError: Error code: 429 - "
+                "{'error': {'code': 'SetLimitExceeded', 'message': 'service has been paused'}}"
+            )
+        return backup_client._fallback_initial_plan(request)
+
+    client._generate_initial_plan_with_openai = fake_generate_initial_plan_with_openai  # type: ignore[method-assign]
+
+    result = asyncio.run(client.build_initial_plan(request))
+
+    assert result.fallback_used is False
+    assert result.used_llm is True
+    assert len(result.draft.days) == 3
+    assert any("已切换到备用模型" in warning for warning in result.warnings)

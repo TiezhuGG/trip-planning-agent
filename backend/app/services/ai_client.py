@@ -23,6 +23,7 @@ from app.schemas.planning import (
     MealRecommendation,
     PlanningContext,
     RouteSummary,
+    RouteStep,
     StayRecommendation,
     ToolCallRecord,
     TravelPlan,
@@ -61,41 +62,93 @@ class LLMDiagnosisResult:
     warnings: list[str]
 
 
+@dataclass(frozen=True)
+class LLMProvider:
+    label: str
+    client: Any
+    model: str
+    base_url: str
+
+
 class TravelAIClient:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.client = None
+        self.primary_model = settings.openai_model
         self.base_url = self._normalize_base_url(settings.openai_base_url)
+        self.secondary_client = None
+        self.secondary_model = settings.openai_backup_model
+        self.secondary_base_url = self._normalize_base_url(settings.openai_backup_base_url)
         if settings.has_openai and AsyncOpenAI is not None:
-            timeout = httpx.Timeout(settings.openai_timeout_seconds, connect=min(15, settings.openai_timeout_seconds))
-            kwargs: dict[str, Any] = {
-                "api_key": settings.openai_api_key,
-                "max_retries": settings.openai_max_retries,
-                "http_client": httpx.AsyncClient(
-                    timeout=timeout,
-                    trust_env=settings.openai_trust_env,
-                ),
-            }
-            if self.base_url:
-                kwargs["base_url"] = self.base_url
-            self.client = AsyncOpenAI(**kwargs)
+            self.client = self._create_client(
+                api_key=settings.openai_api_key,
+                base_url=self.base_url,
+            )
+        if settings.has_backup_openai and AsyncOpenAI is not None:
+            self.secondary_client = self._create_client(
+                api_key=settings.openai_backup_api_key,
+                base_url=self.secondary_base_url,
+            )
+
+    def _create_client(self, api_key: str, base_url: str) -> Any:
+        timeout = httpx.Timeout(self.settings.openai_timeout_seconds, connect=min(15, self.settings.openai_timeout_seconds))
+        kwargs: dict[str, Any] = {
+            "api_key": api_key,
+            "max_retries": self.settings.openai_max_retries,
+            "http_client": httpx.AsyncClient(
+                timeout=timeout,
+                trust_env=self.settings.openai_trust_env,
+            ),
+        }
+        if base_url:
+            kwargs["base_url"] = base_url
+        return AsyncOpenAI(**kwargs)
+
+    def _configured_providers(self) -> list[LLMProvider]:
+        providers: list[LLMProvider] = []
+        if self.client is not None:
+            providers.append(
+                LLMProvider(
+                    label="主模型",
+                    client=self.client,
+                    model=self.primary_model or self.settings.openai_model or "primary-model",
+                    base_url=self.base_url,
+                )
+            )
+        if self.secondary_client is not None:
+            providers.append(
+                LLMProvider(
+                    label="备用模型",
+                    client=self.secondary_client,
+                    model=self.secondary_model or self.settings.openai_backup_model or "backup-model",
+                    base_url=self.secondary_base_url,
+                )
+            )
+        return providers
+
+    def _default_model_name(self) -> str:
+        for provider in self._configured_providers():
+            if provider.model:
+                return provider.model
+        return self.primary_model or self.secondary_model or self.settings.openai_model or self.settings.openai_backup_model
 
     async def diagnose(self, check_connection: bool = True) -> LLMDiagnosisResult:
-        if not self.settings.has_openai:
+        providers = self._configured_providers()
+        if not providers and not self.settings.has_any_openai:
             return LLMDiagnosisResult(
                 enabled=False,
                 reachable=False,
-                model=self.settings.openai_model,
-                base_url=self.base_url,
+                model=self._default_model_name(),
+                base_url=self.base_url or self.secondary_base_url,
                 warnings=["未配置大模型 API Key 或模型名。"],
             )
 
-        if self.client is None:
+        if not providers:
             return LLMDiagnosisResult(
                 enabled=True,
                 reachable=False,
-                model=self.settings.openai_model,
-                base_url=self.base_url,
+                model=self._default_model_name(),
+                base_url=self.base_url or self.secondary_base_url,
                 warnings=["OpenAI Python SDK 不可用，请检查依赖安装。"],
             )
 
@@ -103,55 +156,58 @@ class TravelAIClient:
             return LLMDiagnosisResult(
                 enabled=True,
                 reachable=False,
-                model=self.settings.openai_model,
-                base_url=self.base_url,
+                model=self._default_model_name(),
+                base_url=(providers[0].base_url if providers else ""),
                 warnings=[],
             )
 
-        try:
-            payload = await self._request_json_payload(
-                system_prompt="你是联调探针。请只返回 JSON。",
-                user_payload={"task": "ping", "response_schema_hint": {"status": "ok"}},
-                temperature=0,
-                max_tokens=32,
-            )
-            if str(payload.get("status", "")).lower() != "ok":
-                raise ValueError("模型未按约定返回诊断 JSON")
-            return LLMDiagnosisResult(
-                enabled=True,
-                reachable=True,
-                model=self.settings.openai_model,
-                base_url=self.base_url,
-                warnings=[],
-            )
-        except Exception as exc:
-            return LLMDiagnosisResult(
-                enabled=True,
-                reachable=False,
-                model=self.settings.openai_model,
-                base_url=self.base_url,
-                warnings=[f"大模型连通性检查失败: {exc}"],
-            )
+        warnings: list[str] = []
+        for index, provider in enumerate(providers):
+            try:
+                payload = await self._request_json_payload(
+                    system_prompt="你是联调探针。请只返回 JSON。",
+                    user_payload={"task": "ping", "response_schema_hint": {"status": "ok"}},
+                    temperature=0,
+                    max_tokens=32,
+                    client=provider.client,
+                    model=provider.model,
+                )
+                if str(payload.get("status", "")).lower() != "ok":
+                    raise ValueError("模型未按约定返回诊断 JSON")
+                if index > 0:
+                    warnings.append(f"主模型不可用，当前诊断已切换到备用模型 {provider.model}。")
+                return LLMDiagnosisResult(
+                    enabled=True,
+                    reachable=True,
+                    model=provider.model,
+                    base_url=provider.base_url,
+                    warnings=warnings,
+                )
+            except Exception as exc:
+                warnings.append(f"{provider.label}连通性检查失败: {exc}")
+                if index < len(providers) - 1 and self._should_switch_to_backup_model(exc):
+                    continue
+        return LLMDiagnosisResult(
+            enabled=True,
+            reachable=False,
+            model=self._default_model_name(),
+            base_url=(providers[0].base_url if providers else ""),
+            warnings=warnings,
+        )
 
     async def build_initial_plan(self, request: TripPlanningRequest) -> InitialPlanBuildResult:
-        if self.client is None:
+        providers = self._configured_providers()
+        if not providers:
             raise RuntimeError("未配置可用的大模型客户端，无法生成初步规划。")
         warnings: list[str] = []
-        retry_specs = [
-            (0.4, 2048),
-            (0.2, 3072),
-            (0.1, 3072),
-            (0.0, 4096),
-            (0.0, 4096),
-        ]
         last_error: Exception | None = None
-        for attempt, (temperature, max_tokens) in enumerate(retry_specs, start=1):
+        for index, provider in enumerate(providers):
             try:
-                draft = await self._generate_initial_plan_with_openai(
+                draft, provider_warnings = await self._build_initial_plan_with_provider(
                     request,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
+                    provider,
                 )
+                warnings.extend(provider_warnings)
                 return InitialPlanBuildResult(
                     draft=draft,
                     used_llm=True,
@@ -160,12 +216,32 @@ class TravelAIClient:
                 )
             except Exception as exc:
                 last_error = exc
-                if not self._is_retryable_seed_error(exc) or attempt >= len(retry_specs):
-                    break
-                warnings.append(f"seed 第 {attempt} 次失败，已重试。原因: {self._format_exception(exc)}")
-                await asyncio.sleep(min(2.0, 0.4 * attempt))
-
+                if index < len(providers) - 1 and self._should_switch_to_backup_model(exc):
+                    warnings.append(
+                        f"{provider.label} {provider.model} 暂不可用，已切换到备用模型。原因: {self._format_exception(exc)}"
+                    )
+                    continue
+                if self._should_fallback_to_template(exc):
+                    warnings.append(
+                        f"初步规划调用大模型受限，已切换到规则模板。原因: {self._format_exception(exc)}"
+                    )
+                    return InitialPlanBuildResult(
+                        draft=self._fallback_initial_plan(request),
+                        used_llm=False,
+                        fallback_used=True,
+                        warnings=warnings,
+                    )
         assert last_error is not None
+        if self._should_fallback_to_template(last_error):
+            warnings.append(
+                f"初步规划调用大模型受限，已切换到规则模板。原因: {self._format_exception(last_error)}"
+            )
+            return InitialPlanBuildResult(
+                draft=self._fallback_initial_plan(request),
+                used_llm=False,
+                fallback_used=True,
+                warnings=warnings,
+            )
         raise RuntimeError(f"初步规划调用大模型失败: {self._format_exception(last_error)}") from last_error
 
     async def compose_plan(
@@ -175,26 +251,58 @@ class TravelAIClient:
         context: PlanningContext,
         tool_trace: list[ToolCallRecord],
     ) -> FinalPlanBuildResult:
-        if self.client is None:
+        providers = self._configured_providers()
+        if not providers:
             raise RuntimeError("未配置可用的大模型客户端，无法生成最终行程。")
-        try:
-            plan, warnings = await self._compose_with_openai(request, initial_plan, context, tool_trace)
-            return FinalPlanBuildResult(
-                plan=plan,
-                used_llm=True,
-                fallback_used=False,
-                warnings=warnings,
-            )
-        except Exception as exc:
-            raise RuntimeError(f"最终行程汇总调用大模型失败: {self._format_exception(exc)}") from exc
+        warnings: list[str] = []
+        last_error: Exception | None = None
+        for index, provider in enumerate(providers):
+            try:
+                plan, provider_warnings = await self._compose_with_provider(
+                    request=request,
+                    initial_plan=initial_plan,
+                    context=context,
+                    tool_trace=tool_trace,
+                    provider=provider,
+                )
+                warnings.extend(provider_warnings)
+                return FinalPlanBuildResult(
+                    plan=plan,
+                    used_llm=True,
+                    fallback_used=False,
+                    warnings=warnings,
+                )
+            except Exception as exc:
+                last_error = exc
+                if index < len(providers) - 1 and self._should_switch_to_backup_model(exc):
+                    warnings.append(
+                        f"{provider.label} {provider.model} 暂不可用，已切换到备用模型。原因: {self._format_exception(exc)}"
+                    )
+                    continue
+                if self._should_fallback_to_template(exc):
+                    return FinalPlanBuildResult(
+                        plan=self._build_fallback_final_plan(request, initial_plan, context),
+                        used_llm=False,
+                        fallback_used=True,
+                        warnings=warnings
+                        + [f"最终行程汇总调用大模型受限，已切换到规则模板。原因: {self._format_exception(exc)}"],
+                    )
+                raise RuntimeError(f"最终行程汇总调用大模型失败: {self._format_exception(exc)}") from exc
+
+        assert last_error is not None
+        raise RuntimeError(f"最终行程汇总调用大模型失败: {self._format_exception(last_error)}") from last_error
 
     async def _generate_initial_plan_with_openai(
         self,
         request: TripPlanningRequest,
         temperature: float = 0.4,
         max_tokens: int | None = None,
+        client: Any | None = None,
+        model: str | None = None,
     ) -> InitialPlanDraft:
-        assert self.client is not None
+        if client is None:
+            client = self.client
+        assert client is not None
         schema_hint = {
             "summary": "string",
             "days": [
@@ -222,6 +330,8 @@ class TravelAIClient:
             },
             temperature=temperature,
             max_tokens=max_tokens,
+            client=client,
+            model=model,
         )
         draft = InitialPlanDraft.model_validate(payload)
         self._ensure_initial_plan_integrity(request, draft)
@@ -233,8 +343,12 @@ class TravelAIClient:
         initial_plan: InitialPlanDraft,
         context: PlanningContext,
         tool_trace: list[ToolCallRecord],
+        client: Any | None = None,
+        model: str | None = None,
     ) -> tuple[TravelPlan, list[str]]:
-        assert self.client is not None
+        if client is None:
+            client = self.client
+        assert client is not None
         schema_hint = {
             "title": "string",
             "summary": "string",
@@ -324,6 +438,8 @@ class TravelAIClient:
                     user_payload={**user_payload, "response_schema_hint": schema_hint},
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    client=client,
+                    model=model,
                 )
                 plan = self._finalize_composed_plan(request=request, context=context, payload=payload)
                 return plan, warnings
@@ -333,6 +449,8 @@ class TravelAIClient:
                         request=request,
                         raw_payload=payload,
                         schema_hint=schema_hint,
+                        client=client,
+                        model=model,
                     )
                     if repaired_payload is not None:
                         try:
@@ -428,6 +546,8 @@ class TravelAIClient:
         request: TripPlanningRequest,
         raw_payload: dict[str, Any],
         schema_hint: dict[str, Any],
+        client: Any | None = None,
+        model: str | None = None,
     ) -> dict[str, Any] | None:
         try:
             return await self._request_json_payload(
@@ -444,11 +564,15 @@ class TravelAIClient:
                 },
                 temperature=0,
                 max_tokens=8192,
+                client=client,
+                model=model,
             )
         except Exception:
             return None
 
     def _is_retryable_compose_error(self, exc: Exception) -> bool:
+        if self._should_fallback_to_template(exc):
+            return False
         message = str(exc).lower()
         retryable_keywords = (
             "天数不匹配",
@@ -471,6 +595,8 @@ class TravelAIClient:
         )
 
     def _is_retryable_seed_error(self, exc: Exception) -> bool:
+        if self._should_fallback_to_template(exc):
+            return False
         message = str(exc).lower()
         retryable_keywords = (
             "timed out",
@@ -489,6 +615,44 @@ class TravelAIClient:
         return isinstance(exc, (ValueError, RuntimeError, httpx.TimeoutException)) and any(
             keyword in message for keyword in retryable_keywords
         )
+
+    def _should_switch_to_backup_model(self, exc: Exception) -> bool:
+        if self._should_fallback_to_template(exc):
+            return True
+        message = str(exc).lower()
+        switch_keywords = (
+            "apiconnectionerror",
+            "connection error",
+            "connecterror",
+            "service unavailable",
+            "temporarily unavailable",
+            "server error",
+            "internal server error",
+            "bad gateway",
+            "gateway timeout",
+            "overloaded",
+            "dns",
+            "name or service not known",
+            "connection refused",
+            "ssl",
+        )
+        return isinstance(exc, (ValueError, RuntimeError, httpx.NetworkError)) and any(
+            keyword in message for keyword in switch_keywords
+        )
+
+    def _should_fallback_to_template(self, exc: Exception) -> bool:
+        message = str(exc).lower()
+        fallback_keywords = (
+            "error code: 429",
+            "429 too many requests",
+            "too many requests",
+            "ratelimiterror",
+            "rate limit",
+            "setlimitexceeded",
+            "service has been paused",
+            "insufficient_quota",
+        )
+        return any(keyword in message for keyword in fallback_keywords)
 
     def _build_compose_user_payload(
         self,
@@ -594,8 +758,14 @@ class TravelAIClient:
         user_payload: dict[str, Any],
         temperature: float,
         max_tokens: int | None = None,
+        client: Any | None = None,
+        model: str | None = None,
     ) -> dict[str, Any]:
-        assert self.client is not None
+        if client is None:
+            client = self.client
+        if model is None:
+            model = self.primary_model or self.settings.openai_model
+        assert client is not None
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -606,7 +776,7 @@ class TravelAIClient:
         for mode in ("json_object", "plain_text_json", "minimal"):
             try:
                 request_kwargs: dict[str, Any] = {
-                    "model": self.settings.openai_model,
+                    "model": model,
                     "messages": messages,
                 }
                 if mode != "minimal":
@@ -616,7 +786,7 @@ class TravelAIClient:
                 if mode == "json_object":
                     request_kwargs["response_format"] = {"type": "json_object"}
 
-                completion = await self.client.chat.completions.create(**request_kwargs)
+                completion = await client.chat.completions.create(**request_kwargs)
                 content = self._extract_message_content(completion)
                 payload = extract_json_payload(content)
                 if isinstance(payload, dict):
@@ -626,6 +796,64 @@ class TravelAIClient:
                 errors.append(f"{mode}: {self._format_exception(exc)}")
 
         raise ValueError("；".join(errors))
+
+    async def _build_initial_plan_with_provider(
+        self,
+        request: TripPlanningRequest,
+        provider: LLMProvider,
+    ) -> tuple[InitialPlanDraft, list[str]]:
+        warnings: list[str] = []
+        retry_specs = [
+            (0.4, 2048),
+            (0.2, 3072),
+            (0.1, 3072),
+            (0.0, 4096),
+            (0.0, 4096),
+        ]
+        last_error: Exception | None = None
+        for attempt, (temperature, max_tokens) in enumerate(retry_specs, start=1):
+            try:
+                draft = await self._generate_initial_plan_with_openai(
+                    request,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    client=provider.client,
+                    model=provider.model,
+                )
+                if provider.label != "主模型" and self.client is not None:
+                    warnings.append(f"已切换到备用模型 {provider.model} 继续生成初步规划。")
+                return draft, warnings
+            except Exception as exc:
+                last_error = exc
+                if self._should_switch_to_backup_model(exc):
+                    raise
+                if not self._is_retryable_seed_error(exc) or attempt >= len(retry_specs):
+                    break
+                warnings.append(f"seed 第 {attempt} 次失败，已重试。原因: {self._format_exception(exc)}")
+                await asyncio.sleep(min(2.0, 0.4 * attempt))
+
+        assert last_error is not None
+        raise last_error
+
+    async def _compose_with_provider(
+        self,
+        request: TripPlanningRequest,
+        initial_plan: InitialPlanDraft,
+        context: PlanningContext,
+        tool_trace: list[ToolCallRecord],
+        provider: LLMProvider,
+    ) -> tuple[TravelPlan, list[str]]:
+        plan, warnings = await self._compose_with_openai(
+            request=request,
+            initial_plan=initial_plan,
+            context=context,
+            tool_trace=tool_trace,
+            client=provider.client,
+            model=provider.model,
+        )
+        if provider.label != "主模型" and self.client is not None:
+            warnings = [f"已切换到备用模型 {provider.model} 继续生成最终行程。"] + warnings
+        return plan, warnings
 
     def _extract_message_content(self, completion: Any) -> str:
         choices = getattr(completion, "choices", None) or []
@@ -1021,6 +1249,34 @@ class TravelAIClient:
                         booking_tip="热门景点建议提前预约并错峰到达",
                     )
                 )
+            if not activities:
+                focus = seed_day.focus if seed_day else request.destination
+                activities.append(
+                    Activity(
+                        start_time="09:30",
+                        end_time="12:00",
+                        title=f"{focus} 城市漫游",
+                        category="explore",
+                        description=(
+                            f"围绕 {focus} 安排一段弹性较高的城市漫游，"
+                            "优先覆盖核心街区、地标外观和适合停留拍照的开放区域。"
+                        ),
+                        location_name=request.destination,
+                        transport_from_previous="从住宿区域出发，优先使用地铁或步行衔接。",
+                        expected_cost="¥0/人",
+                        ticket_cost_cny=0,
+                        booking_tip="根据当天体力和天气灵活调整停留时长。",
+                    )
+                )
+
+            if day_route is None:
+                day_route = self._fallback_route_summary(
+                    day_number=day_index + 1,
+                    request=request,
+                    hotel=hotel,
+                    seed_day=seed_day,
+                    destination_name=activities[0].location_name,
+                )
 
             meals = self._build_meals(day_restaurants, food_cost)
             route_tip = (
@@ -1109,6 +1365,46 @@ class TravelAIClient:
                 "基础防晒用品",
             ],
             days=days,
+        )
+
+    def _build_fallback_final_plan(
+        self,
+        request: TripPlanningRequest,
+        initial_plan: InitialPlanDraft,
+        context: PlanningContext,
+    ) -> TravelPlan:
+        plan = self._fallback_plan(request, initial_plan, context)
+        plan = self._normalize_plan_days(request, plan, context)
+        self._ensure_final_plan_integrity(request, plan)
+        return self._apply_deterministic_budget(request, plan)
+
+    def _fallback_route_summary(
+        self,
+        day_number: int,
+        request: TripPlanningRequest,
+        hotel: Any | None,
+        seed_day: InitialPlanDay | None,
+        destination_name: str,
+    ) -> RouteSummary:
+        hotel_name = getattr(hotel, "name", "") if hotel is not None else ""
+        hotel_area = getattr(hotel, "address", "") if hotel is not None else ""
+        focus = seed_day.focus if seed_day else request.destination
+        return RouteSummary(
+            day_number=day_number,
+            title=f"第 {day_number} 天 {focus} 动线",
+            from_name=hotel_name or hotel_area or request.hotel_style,
+            to_name=destination_name or request.destination,
+            waypoints=[focus] if focus and focus != request.destination else [],
+            duration_text="约 30-45 分钟",
+            mode="transit",
+            estimated_transport_cost_cny=20,
+            steps=[
+                RouteStep(
+                    instruction="从住宿区域出发，优先乘坐地铁或打车前往当日核心片区。",
+                    distance_text="约 8 公里",
+                    duration_text="约 30-45 分钟",
+                )
+            ],
         )
 
     def _default_daily_forecast(self, date: str) -> DailyForecast:

@@ -1,5 +1,4 @@
-﻿from datetime import datetime
-
+from datetime import datetime, timezone
 from functools import lru_cache
 
 from fastapi import APIRouter, HTTPException
@@ -27,6 +26,6 @@ async def get_integration_status() -> IntegrationStatus:
 @router.post("/plans/generate", response_model=PlanningResponse)
 async def generate_plan(payload: TripPlanningRequest) -> PlanningResponse:
     try:
-        return await get_planner_service().generate(payload, generated_at=datetime.utcnow())
+        return await get_planner_service().generate(payload, generated_at=datetime.now(timezone.utc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"生成旅行计划失败: {exc.__class__.__name__}: {exc}") from exc

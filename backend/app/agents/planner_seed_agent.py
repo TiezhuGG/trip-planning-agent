@@ -6,7 +6,9 @@ class PlannerSeedAgent:
     def __init__(self, ai_client: TravelAIClient) -> None:
         self.ai_client = ai_client
 
-    async def gather(self, request: TripPlanningRequest) -> tuple[InitialPlanDraft, AgentExecution]:
+    async def gather(
+        self, request: TripPlanningRequest
+    ) -> tuple[InitialPlanDraft, AgentExecution, bool, bool, list[str]]:
         result = await self.ai_client.build_initial_plan(request)
         summary = "已生成初步行程骨架。"
         if result.fallback_used:
@@ -21,4 +23,7 @@ class PlannerSeedAgent:
                 used_tools=[],
                 warnings=result.warnings,
             ),
+            result.used_llm,
+            result.fallback_used,
+            result.warnings,
         )

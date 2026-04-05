@@ -1,5 +1,5 @@
 import asyncio
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 from pydantic import ValidationError
@@ -64,7 +64,9 @@ def test_generate_keeps_working_when_weather_unavailable() -> None:
             warnings=[],
         )
 
-    async def fake_seed_gather(_request: TripPlanningRequest) -> tuple[InitialPlanDraft, AgentExecution]:
+    async def fake_seed_gather(
+        _request: TripPlanningRequest,
+    ) -> tuple[InitialPlanDraft, AgentExecution, bool, bool, list[str]]:
         draft = InitialPlanDraft(
             summary="seed",
             days=[
@@ -84,7 +86,7 @@ def test_generate_keeps_working_when_weather_unavailable() -> None:
                 ),
             ],
         )
-        return draft, AgentExecution(agent_name="planner_seed_agent", success=True)
+        return draft, AgentExecution(agent_name="planner_seed_agent", success=True), True, False, []
 
     async def fake_sight_gather(
         _request: TripPlanningRequest,
@@ -216,7 +218,7 @@ def test_generate_keeps_working_when_weather_unavailable() -> None:
         start_date=date(2026, 3, 20),
         days=2,
     )
-    result = asyncio.run(coordinator.generate(request, generated_at=datetime.utcnow()))
+    result = asyncio.run(coordinator.generate(request, generated_at=datetime.now(UTC)))
 
     assert result.status == "success"
     assert result.plan.days

@@ -46,3 +46,29 @@ def test_fallback_planner_generates_requested_days() -> None:
     assert len(plan.days) == 4
     assert "杭州" in plan.title
     assert plan.days[0].theme
+
+
+def test_fallback_final_plan_stays_valid_without_poi_or_route_context() -> None:
+    settings = Settings()
+    client = TravelAIClient(settings)
+
+    request = TripPlanningRequest(
+        destination="杭州",
+        start_date=date(2026, 3, 10),
+        days=2,
+        interests=["美食", "文化"],
+    )
+    initial_plan = client._fallback_initial_plan(request)
+    context = PlanningContext(
+        destination="杭州",
+        weather=WeatherSummary(
+            overview="天气稳定，适合出游",
+            temperature_range="18-26°C",
+        ),
+    )
+
+    plan = client._build_fallback_final_plan(request, initial_plan, context)
+
+    assert len(plan.days) == 2
+    assert all(day.activities for day in plan.days)
+    assert all(day.route_summaries for day in plan.days)

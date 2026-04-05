@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_base_url: str = ""
     openai_model: str = ""
+    openai_backup_api_key: str = ""
+    openai_backup_base_url: str = ""
+    openai_backup_model: str = ""
     openai_timeout_seconds: int = 60
     openai_max_retries: int = 1
     openai_trust_env: bool = False
@@ -31,6 +34,14 @@ class Settings(BaseSettings):
     @property
     def has_openai(self) -> bool:
         return bool(self.openai_api_key and self.openai_model)
+
+    @property
+    def has_backup_openai(self) -> bool:
+        return bool(self.openai_backup_api_key and self.openai_backup_model)
+
+    @property
+    def has_any_openai(self) -> bool:
+        return self.has_openai or self.has_backup_openai
 
     @property
     def has_mcp(self) -> bool:

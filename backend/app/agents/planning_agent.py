@@ -72,9 +72,15 @@ class PlanningCoordinatorAgent:
             if integration_status.missing_tools:
                 raise RuntimeError(f"MCP 工具映射不完整: {', '.join(integration_status.missing_tools)}")
 
-            initial_plan, seed_trace = await self.seed_agent.gather(request)
+            (
+                initial_plan,
+                seed_trace,
+                seed_llm_used,
+                seed_fallback_used,
+                seed_warnings,
+            ) = await self.seed_agent.gather(request)
             agent_trace.append(seed_trace)
-            warnings.extend(seed_trace.warnings)
+            warnings.extend(seed_warnings)
 
             context = PlanningContext(
                 destination=request.destination,
@@ -169,7 +175,7 @@ class PlanningCoordinatorAgent:
             agent_trace.append(route_trace)
             warnings.extend(route_trace.warnings)
 
-            plan, compose_trace, compose_llm_used, _compose_fallback_used, compose_warnings = await self.composer_agent.gather(
+            plan, compose_trace, compose_llm_used, compose_fallback_used, compose_warnings = await self.composer_agent.gather(
                 request=request,
                 initial_plan=initial_plan,
                 context=context,
@@ -178,8 +184,8 @@ class PlanningCoordinatorAgent:
             agent_trace.append(compose_trace)
             warnings.extend(compose_warnings)
 
-            llm_used = seed_trace.used_llm or compose_llm_used
-            fallback_used = False
+            llm_used = seed_llm_used or compose_llm_used
+            fallback_used = seed_fallback_used or compose_fallback_used
             integration_status.llm_reachable = integration_status.llm_reachable or llm_used
 
             return PlanningResponse(
