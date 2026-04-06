@@ -488,8 +488,7 @@ class TravelAIClient:
         plan = TravelPlan.model_validate(normalized_payload)
         plan = self._normalize_plan_days(request, plan, context)
         self._ensure_final_plan_integrity(request, plan, require_routes=bool(context.routes))
-        plan = self._apply_deterministic_budget(request, plan)
-        return self._attach_plan_truth(plan, context, request.destination)
+        return self._apply_deterministic_budget(request, plan)
 
     def finalize_plan_with_routes(
         self,
@@ -498,9 +497,9 @@ class TravelAIClient:
         context: PlanningContext,
     ) -> TravelPlan:
         plan = self._normalize_plan_days(request, plan, context)
+        plan = self._attach_plan_truth(plan, context, request.destination)
         self._ensure_final_plan_integrity(request, plan, require_routes=True)
-        plan = self._apply_deterministic_budget(request, plan)
-        return self._attach_plan_truth(plan, context, request.destination)
+        return self._apply_deterministic_budget(request, plan)
 
     def _normalize_compose_payload(
         self,
@@ -1630,7 +1629,7 @@ class TravelAIClient:
             for activity in day.activities:
                 activity_poi = self._resolve_final_poi(
                     lookup_name=activity.location_name,
-                    candidates=[*context.attractions, *context.restaurants, *context.hotels],
+                    candidates=context.attractions,
                     destination=destination,
                     fallback_name=activity.location_name,
                 )
@@ -1721,7 +1720,7 @@ class TravelAIClient:
         normalized_lookup: str,
         candidates: list[POIRecommendation],
     ) -> POIRecommendation | None:
-        scored: list[tuple[int, int, int, POIRecommendation]] = []
+        scored: list[tuple[int, int, int, int, POIRecommendation]] = []
         for candidate in candidates:
             normalized_name = self._normalize_location_text(candidate.name)
             if not normalized_name:
@@ -1729,14 +1728,28 @@ class TravelAIClient:
             exact_penalty = 0 if normalized_name == normalized_lookup else 1
             contains_penalty = 0 if normalized_lookup in normalized_name or normalized_name in normalized_lookup else 1
             coordinate_penalty = 0 if candidate.longitude is not None and candidate.latitude is not None else 1
-            if exact_penalty and contains_penalty:
+            fragment_hits = sum(
+                1
+                for fragment in self._location_fragments(normalized_lookup)
+                if fragment and fragment in normalized_name
+            )
+            fragment_penalty = 0 if fragment_hits > 0 else 1
+            if exact_penalty and contains_penalty and fragment_penalty:
                 continue
-            scored.append((exact_penalty, contains_penalty, coordinate_penalty, candidate))
+            scored.append(
+                (
+                    exact_penalty,
+                    contains_penalty,
+                    fragment_penalty,
+                    coordinate_penalty,
+                    candidate,
+                )
+            )
 
         if not scored:
             return None
-        scored.sort(key=lambda item: item[:3])
-        return scored[0][3]
+        scored.sort(key=lambda item: item[:4])
+        return scored[0][4]
 
     def _ensure_display_ready_poi(
         self,
@@ -2011,8 +2024,7 @@ class TravelAIClient:
         plan = self._fallback_plan(request, initial_plan, context)
         plan = self._normalize_plan_days(request, plan, context)
         self._ensure_final_plan_integrity(request, plan, require_routes=bool(context.routes))
-        plan = self._apply_deterministic_budget(request, plan)
-        return self._attach_plan_truth(plan, context, request.destination)
+        return self._apply_deterministic_budget(request, plan)
 
     def _fallback_route_summary(
         self,

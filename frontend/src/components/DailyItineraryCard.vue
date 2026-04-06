@@ -33,6 +33,11 @@ function formatCny(value: number, suffix = "") {
   if (!value) return "";
   return `¥${value.toLocaleString()}${suffix}`;
 }
+
+function shortAddress(value?: string | null) {
+  if (!value) return "";
+  return value.length > 28 ? `${value.slice(0, 28)}...` : value;
+}
 </script>
 
 <template>
@@ -82,11 +87,24 @@ function formatCny(value: number, suffix = "") {
                 <div class="font-medium text-ink">
                   {{ activity.start_time }} - {{ activity.end_time }} · {{ activity.title }}
                 </div>
+                <div class="mt-2 text-xs text-[#35516b]">
+                  {{ activity.poi?.name || activity.location_name }}
+                </div>
+                <div
+                  v-if="activity.poi?.address"
+                  class="mt-1 text-xs text-slate-500"
+                >
+                  {{ shortAddress(activity.poi.address) }}
+                </div>
                 <div class="mt-2 leading-6">
                   {{ activity.description }}
                 </div>
                 <div class="mt-2 text-xs text-slate-500">
-                  门票：{{ activity.expected_cost || formatCny(activity.ticket_cost_cny, "/人") || "待确认" }}
+                  票价：{{
+                    activity.expected_cost ||
+                    formatCny(activity.ticket_cost_cny, "/人") ||
+                    "待确认"
+                  }}
                 </div>
                 <div
                   v-if="activity.transport_from_previous"
@@ -108,8 +126,16 @@ function formatCny(value: number, suffix = "") {
               <div class="mt-2 text-xs text-slate-500">
                 区域：{{ day.stay.area || day.hotel_area || "待定" }}
               </div>
+              <div
+                v-if="day.stay.poi?.address"
+                class="mt-1 text-xs text-slate-500"
+              >
+                地址：{{ shortAddress(day.stay.poi.address) }}
+              </div>
               <div class="mt-3 text-xs text-[#2f5a81]">
-                当日酒店费用：{{ formatCny(day.stay.room_nightly_cost_cny, "/间夜") || "待确认" }}
+                当日酒店费用：{{
+                  formatCny(day.stay.room_nightly_cost_cny, "/间夜") || "待确认"
+                }}
               </div>
             </div>
           </div>
@@ -124,7 +150,9 @@ function formatCny(value: number, suffix = "") {
                 :key="`${day.day_number}-${route.title}-${route.from_name}-${route.to_name}-${routeIndex}`"
                 class="rounded-[18px] border border-[#dfe8f1] bg-white px-3 py-3"
               >
-                <div class="font-medium text-ink">{{ route.title || `路线 ${routeIndex + 1}` }}</div>
+                <div class="font-medium text-ink">
+                  {{ route.title || `路线 ${routeIndex + 1}` }}
+                </div>
                 <div class="mt-2 text-xs text-slate-500">
                   {{ route.from_name || "起点待定" }} → {{ route.to_name || "终点待定" }}
                 </div>
@@ -133,7 +161,9 @@ function formatCny(value: number, suffix = "") {
                   {{ route.duration_text ? ` · ${route.duration_text}` : "" }}
                 </div>
                 <div class="mt-2 text-xs text-[#2f5a81]">
-                  当段交通费用：{{ formatCny(route.estimated_transport_cost_cny, "/人") || "待确认" }}
+                  当段交通费用：{{
+                    formatCny(route.estimated_transport_cost_cny, "/人") || "待确认"
+                  }}
                 </div>
               </div>
             </div>
@@ -150,6 +180,12 @@ function formatCny(value: number, suffix = "") {
               >
                 <div class="font-medium text-ink">
                   {{ mealLabel(meal.meal_type) }} · {{ meal.venue_name }}
+                </div>
+                <div
+                  v-if="meal.poi?.address"
+                  class="mt-1 text-xs text-slate-500"
+                >
+                  {{ shortAddress(meal.poi.address) }}
                 </div>
                 <div class="mt-2 text-xs text-[#2f5a81]">
                   {{ meal.estimated_cost || formatCny(meal.estimated_cost_cny, "/人") || "费用待确认" }}

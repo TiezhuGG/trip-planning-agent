@@ -203,6 +203,15 @@ def test_generate_keeps_working_when_weather_unavailable() -> None:
         trace = AgentExecution(agent_name="itinerary_composer_agent", success=True)
         return plan, trace, True, False, []
 
+    async def fake_bind_plan_truth(
+        request: TripPlanningRequest,
+        plan: TravelPlan,
+        context,
+        trace: list[ToolCallRecord],
+    ):
+        _ = (request, context, trace)
+        return plan, AgentExecution(agent_name="plan_truth_agent", success=True)
+
     async def fake_bind_daily_stays(
         request: TripPlanningRequest,
         plan: TravelPlan,
@@ -231,6 +240,7 @@ def test_generate_keeps_working_when_weather_unavailable() -> None:
     coordinator.meal_agent.gather = fake_meal_gather
     coordinator.meal_agent.bind_daily_meals = fake_bind_daily_meals
     coordinator.route_agent.gather_for_plan = fake_route_gather
+    coordinator.route_agent.bind_plan_truth = fake_bind_plan_truth
     coordinator.composer_agent.gather = fake_compose_gather
 
     request = TripPlanningRequest(
@@ -378,6 +388,15 @@ def test_generate_keeps_working_when_poi_unavailable() -> None:
         trace = AgentExecution(agent_name="itinerary_composer_agent", success=True)
         return plan, trace, True, False, []
 
+    async def fake_bind_plan_truth(
+        request: TripPlanningRequest,
+        plan: TravelPlan,
+        context,
+        trace: list[ToolCallRecord],
+    ):
+        _ = (request, context, trace)
+        return plan, AgentExecution(agent_name="plan_truth_agent", success=True)
+
     async def fake_bind_daily_stays(
         request: TripPlanningRequest,
         plan: TravelPlan,
@@ -406,6 +425,7 @@ def test_generate_keeps_working_when_poi_unavailable() -> None:
     coordinator.meal_agent.gather = fake_meal_gather
     coordinator.meal_agent.bind_daily_meals = fake_bind_daily_meals
     coordinator.route_agent.gather_for_plan = fake_route_gather
+    coordinator.route_agent.bind_plan_truth = fake_bind_plan_truth
     coordinator.composer_agent.gather = fake_compose_gather
 
     request = TripPlanningRequest(
@@ -553,6 +573,15 @@ def test_generate_keeps_working_when_hotels_unavailable() -> None:
         trace = AgentExecution(agent_name="itinerary_composer_agent", success=True)
         return plan, trace, True, False, []
 
+    async def fake_bind_plan_truth(
+        request: TripPlanningRequest,
+        plan: TravelPlan,
+        context,
+        trace: list[ToolCallRecord],
+    ):
+        _ = (request, context, trace)
+        return plan, AgentExecution(agent_name="plan_truth_agent", success=True)
+
     async def fake_bind_daily_stays(
         request: TripPlanningRequest,
         plan: TravelPlan,
@@ -581,6 +610,7 @@ def test_generate_keeps_working_when_hotels_unavailable() -> None:
     coordinator.meal_agent.gather = fake_meal_gather
     coordinator.meal_agent.bind_daily_meals = fake_bind_daily_meals
     coordinator.route_agent.gather_for_plan = fake_route_gather
+    coordinator.route_agent.bind_plan_truth = fake_bind_plan_truth
     coordinator.composer_agent.gather = fake_compose_gather
 
     request = TripPlanningRequest(

@@ -13,8 +13,8 @@ import NotificationModal from "./components/NotificationModal.vue";
 import PlannerLaunchPanel from "./components/PlannerLaunchPanel.vue";
 import TravelTonePanel from "./components/TravelTonePanel.vue";
 import type {
+  DayPOI,
   IntegrationStatus,
-  POIRecommendation,
   PlanningResponse,
   TripPlanningRequest,
   TravelerProfile,
@@ -97,17 +97,18 @@ let progressTimer: number | null = null;
 const currentIntegrationStatus = computed(
   () => result.value?.integration_status ?? integrationStatus.value,
 );
-const itineraryMapPois = computed<POIRecommendation[]>(() => {
+const itineraryMapPois = computed<DayPOI[]>(() => {
   const response = result.value;
   if (!response) return [];
-  const selected: POIRecommendation[] = [];
+  const selected: DayPOI[] = [];
   const seen = new Set<string>();
   for (const day of response.plan.days) {
     for (const item of day.map_pois ?? []) {
+      if (item.kind === "meal") continue;
       const key = item.poi.poi_id || `${item.kind}:${item.poi.name}:${item.poi.address}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      selected.push(item.poi);
+      selected.push(item);
     }
   }
   return selected;

@@ -3,6 +3,7 @@ import math
 
 from app.schemas.planning import (
     AgentExecution,
+    DayPOI,
     DayPlan,
     InitialPlanDraft,
     POIRecommendation,
@@ -161,6 +162,125 @@ class RoutePlanningAgent:
                 summary=summary,
                 used_llm=False,
                 used_tools=sorted(used_tools),
+                warnings=warnings,
+            ),
+        )
+
+    async def bind_plan_truth(
+        self,
+        request: TripPlanningRequest,
+        plan: TravelPlan,
+        context: PlanningContext,
+        trace: list[ToolCallRecord],
+    ) -> tuple[TravelPlan, AgentExecution]:
+        updated_days: list[DayPlan] = []
+        warnings: list[str] = []
+
+        for day in sorted(plan.days, key=lambda item: item.day_number):
+            anchor_points = [*context.attractions, *context.hotels]
+            day_fallbacks = list(day.fallbacks)
+            map_pois: list[DayPOI] = []
+
+            stay_poi = day.stay.poi
+            if self._should_rebind_poi(stay_poi):
+                stay_poi = await self._resolve_origin_for_day(
+                    request=request,
+                    day=day,
+                    context=context,
+                    anchor_points=anchor_points,
+                    trace=trace,
+                )
+            updated_stay = day.stay.model_copy(update={"poi": stay_poi})
+            if stay_poi is not None and updated_stay.hotel_name:
+                map_pois.append(
+                    DayPOI(kind="stay", label=updated_stay.hotel_name, poi=stay_poi)
+                )
+            elif updated_stay.hotel_name:
+                day_fallbacks.append("stay_poi_unresolved")
+
+            updated_activities = []
+            for activity in day.activities:
+                resolved = activity.poi
+                if self._should_rebind_poi(resolved):
+                    resolved = await self._resolve_activity_location(
+                        city=request.destination,
+                        location_name=activity.location_name,
+                        activity_title=activity.title,
+                        context=context,
+                        trace=trace,
+                        anchor_points=anchor_points,
+                    ) or resolved
+                updated_activity = activity.model_copy(update={"poi": resolved})
+                updated_activities.append(updated_activity)
+                if resolved is not None:
+                    map_pois.append(
+                        DayPOI(
+                            kind="activity",
+                            label=activity.title or activity.location_name,
+                            poi=resolved,
+                        )
+                    )
+                elif activity.location_name:
+                    day_fallbacks.append(f"activity_poi_unresolved:{activity.location_name}")
+
+            updated_meals = []
+            for meal in day.meals:
+                resolved_meal = meal.poi
+                if self._should_rebind_poi(resolved_meal) and meal.venue_name:
+                    resolved_meal = await self._resolve_named_location(
+                        city=request.destination,
+                        location_name=meal.venue_name,
+                        known_points=context.restaurants,
+                        trace=trace,
+                        anchor_points=context.restaurants or anchor_points,
+                    ) or resolved_meal
+                    if resolved_meal is None and meal.meal_type == "breakfast":
+                        resolved_meal = updated_stay.poi
+                updated_meal = meal.model_copy(update={"poi": resolved_meal})
+                updated_meals.append(updated_meal)
+                if resolved_meal is not None:
+                    map_pois.append(
+                        DayPOI(
+                            kind="meal",
+                            label=meal.meal_type,
+                            poi=resolved_meal,
+                        )
+                    )
+
+            route_segments = list(day.route_segments or day.route_summaries)
+            if not route_segments and day.route_summary is not None:
+                route_segments = [day.route_summary]
+            if updated_activities and not any(
+                item.poi.longitude is not None and item.poi.latitude is not None
+                for item in map_pois
+                if item.kind == "activity"
+            ):
+                warnings.append(f"第 {day.day_number} 天活动点位未解析出坐标，地图将只显示已确认位置。")
+
+            updated_days.append(
+                day.model_copy(
+                    update={
+                        "stay": updated_stay,
+                        "activities": updated_activities,
+                        "meals": updated_meals,
+                        "map_pois": self._build_unique_day_pois(map_pois),
+                        "route_segments": route_segments,
+                        "fallbacks": sorted(set(day_fallbacks)),
+                    }
+                )
+            )
+
+        summary = "已完成最终日程点位校正。"
+        if warnings:
+            summary = "已完成最终日程点位校正，部分活动点位未能解析精确坐标。"
+        return (
+            plan.model_copy(update={"days": updated_days}),
+            AgentExecution(
+                agent_name="plan_truth_agent",
+                success=True,
+                summary=summary,
+                used_llm=False,
+                used_tools=[],
                 warnings=warnings,
             ),
         )
@@ -438,6 +558,7 @@ class RoutePlanningAgent:
             resolved = await self._resolve_activity_location(
                 city=request.destination,
                 location_name=activity.location_name,
+                activity_title=activity.title,
                 context=context,
                 trace=trace,
                 anchor_points=anchor_points,
@@ -461,29 +582,27 @@ class RoutePlanningAgent:
         self,
         city: str,
         location_name: str,
+        activity_title: str,
         context: PlanningContext,
         trace: list[ToolCallRecord],
         anchor_points: list[POIRecommendation],
     ) -> POIRecommendation | None:
-        matched = self._match_known_point(location_name, context.attractions)
-        if matched is not None:
-            return self._ensure_route_ready_poi(matched, city)
+        for query in self._build_activity_location_queries(location_name, activity_title):
+            matched = self._match_known_point(query, context.attractions)
+            if matched is not None:
+                return self._ensure_route_ready_poi(matched, city)
 
-        matched = self._match_known_point(location_name, context.restaurants)
-        if matched is not None:
-            return self._ensure_route_ready_poi(matched, city)
-
-        matched = self._match_known_point(location_name, context.hotels, allow_contains=False)
-        if matched is not None:
-            return self._ensure_route_ready_poi(matched, city)
-
-        return await self._resolve_named_location(
-            city=city,
-            location_name=location_name,
-            known_points=context.attractions,
-            trace=trace,
-            anchor_points=anchor_points,
-        )
+        for query in self._build_activity_location_queries(location_name, activity_title):
+            resolved = await self._resolve_named_location(
+                city=city,
+                location_name=query,
+                known_points=context.attractions,
+                trace=trace,
+                anchor_points=anchor_points,
+            )
+            if resolved is not None:
+                return resolved
+        return None
 
     async def _resolve_named_location(
         self,
@@ -551,6 +670,135 @@ class RoutePlanningAgent:
             seen.add(key)
             deduped.append((poi, label))
         return deduped
+
+    def _build_unique_day_pois(
+        self,
+        pois: list[DayPOI],
+    ) -> list[DayPOI]:
+        deduped: list[DayPOI] = []
+        seen: set[str] = set()
+        for item in pois:
+            key = item.poi.poi_id or f"{item.kind}:{item.poi.name}:{item.poi.address}"
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(item)
+        return deduped
+
+    def _should_rebind_poi(self, poi: POIRecommendation | None) -> bool:
+        if poi is None:
+            return True
+        if poi.longitude is None or poi.latitude is None:
+            return True
+        return (poi.source or "").lower() in {
+            "manual_placeholder",
+            "activity_fallback",
+            "stay_fallback",
+        }
+
+    def _build_activity_location_queries(
+        self,
+        location_name: str,
+        activity_title: str,
+    ) -> list[str]:
+        variants: list[str] = []
+        for candidate in (location_name, activity_title):
+            self._append_activity_variants(variants, candidate)
+        place_suffixes = (
+            "\u5357\u95e8",
+            "\u5317\u95e8",
+            "\u4e1c\u95e8",
+            "\u897f\u95e8",
+            "\u6b63\u95e8",
+            "\u5357\u56ed",
+            "\u5317\u56ed",
+            "\u4e1c\u56ed",
+            "\u897f\u56ed",
+            "\u5916\u56f4",
+            "\u5916\u5708",
+            "\u5165\u53e3",
+            "\u51fa\u53e3",
+            "\u6e38\u5ba2\u4e2d\u5fc3",
+            "\u6e29\u5ba4",
+            "\u957f\u5eca",
+            "\u9057\u5740",
+        )
+        for base in list(variants):
+            for suffix in place_suffixes:
+                if base.endswith(suffix) and len(base) > len(suffix):
+                    self._add_location_variant(variants, base[: -len(suffix)].strip())
+        return variants
+
+    def _append_activity_variants(
+        self,
+        variants: list[str],
+        value: str,
+    ) -> None:
+        for item in self._expand_location_variants(value):
+            if item and item not in variants:
+                variants.append(item)
+            for alias in self._activity_alias_variants(item):
+                if alias and alias not in variants:
+                    variants.append(alias)
+
+    def _expand_location_variants(self, value: str) -> list[str]:
+        text = value.strip()
+        if not text:
+            return []
+
+        variants: list[str] = []
+        self._add_location_variant(variants, text)
+        trimmed = text
+        suffixes = (
+            "外景拍摄",
+            "温室参观",
+            "长廊游览",
+            "遗址漫步",
+            "桃花林徒步",
+            "晨跑",
+            "徒步",
+            "漫步",
+            "游览",
+            "参观",
+            "拍摄",
+            "打卡",
+            "观景",
+            "登山",
+            "夜游",
+        )
+        for suffix in suffixes:
+            if trimmed.endswith(suffix) and len(trimmed) > len(suffix):
+                trimmed = trimmed[: -len(suffix)].strip()
+                self._add_location_variant(variants, trimmed)
+        if "外围" in trimmed:
+            simplified = trimmed.replace("外围", "").strip()
+            self._add_location_variant(variants, simplified)
+        return variants
+
+    def _activity_alias_variants(self, value: str) -> list[str]:
+        alias_map = {
+            "\u5965\u68ee": "\u5965\u6797\u5339\u514b\u68ee\u6797\u516c\u56ed",
+            "\u5965\u68ee\u516c\u56ed": "\u5965\u6797\u5339\u514b\u68ee\u6797\u516c\u56ed",
+            "\u9e1f\u5de2": "\u56fd\u5bb6\u4f53\u80b2\u573a",
+            "\u6c34\u7acb\u65b9": "\u56fd\u5bb6\u6e38\u6cf3\u4e2d\u5fc3",
+            "\u5706\u660e\u56ed\u9057\u5740": "\u5706\u660e\u56ed",
+            "\u56fd\u5bb6\u690d\u7269\u56ed\u6e29\u5ba4": "\u56fd\u5bb6\u690d\u7269\u56ed",
+        }
+        expanded: list[str] = []
+        for alias, canonical in alias_map.items():
+            if alias in value and canonical != value:
+                expanded.append(canonical)
+        return expanded
+
+    def _add_location_variant(
+        self,
+        variants: list[str],
+        value: str,
+    ) -> None:
+        candidate = value.strip()
+        if not candidate or candidate in variants:
+            return
+        variants.append(candidate)
 
     def _ensure_route_ready_poi(
         self,

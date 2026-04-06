@@ -232,8 +232,16 @@ class PlanningCoordinatorAgent:
                 plan=plan,
                 context=context,
             )
+            plan, truth_trace = await self.route_agent.bind_plan_truth(
+                request=request,
+                plan=plan,
+                context=context,
+                trace=tool_trace,
+            )
             agent_trace.append(route_trace)
             warnings.extend(route_trace.warnings)
+            agent_trace.append(truth_trace)
+            warnings.extend(truth_trace.warnings)
 
             llm_used = seed_llm_used or compose_llm_used
             fallback_used = seed_fallback_used or compose_fallback_used
@@ -254,6 +262,7 @@ class PlanningCoordinatorAgent:
                 meal_candidate_trace=meal_candidate_trace,
                 meal_binding_trace=meal_binding_trace,
                 route_trace=route_trace,
+                truth_trace=truth_trace,
                 plan=plan,
             )
             response_status = self._resolve_response_status(
@@ -328,6 +337,7 @@ class PlanningCoordinatorAgent:
         meal_candidate_trace: AgentExecution,
         meal_binding_trace: AgentExecution,
         route_trace: AgentExecution,
+        truth_trace: AgentExecution,
         plan,
     ) -> PlanDiagnostics:
         llm_diagnostics = [
@@ -358,6 +368,7 @@ class PlanningCoordinatorAgent:
             self._trace_to_stage("daily_hotel_binding", hotel_binding_trace),
             self._trace_to_stage("daily_meal_binding", meal_binding_trace),
             self._trace_to_stage("route_generation", route_trace),
+            self._trace_to_stage("plan_truth_binding", truth_trace),
         ]
         fallback_sources = [
             item.stage

@@ -477,3 +477,84 @@ def test_finalize_plan_with_routes_attaches_day_truth_fields() -> None:
     assert lunch.poi.name == "升文老字号扁食店"
     assert day.route_segments
     assert {item.kind for item in day.map_pois} >= {"activity", "meal", "stay"}
+
+
+def test_finalize_plan_with_routes_prefers_attraction_candidates_for_activities() -> None:
+    settings = Settings()
+    client = TravelAIClient(settings)
+    request = _build_request(days=1, adults=2)
+    source = _build_plan(days=1)
+    source.days[0].activities = [
+        Activity(
+            start_time="09:00",
+            end_time="11:00",
+            title="灵隐寺参访",
+            category="sightseeing",
+            description="desc",
+            location_name="灵隐寺",
+        )
+    ]
+    context = PlanningContext(
+        destination="杭州",
+        attractions=[
+            POIRecommendation(
+                name="杭州灵隐寺",
+                address="西湖区法云弄1号",
+                district="西湖区",
+                longitude=120.1012,
+                latitude=30.2428,
+            )
+        ],
+        restaurants=[
+            POIRecommendation(
+                name="肯德基（杭州灵隐店）",
+                address="西湖区灵隐路",
+                district="西湖区",
+                longitude=120.1020,
+                latitude=30.2431,
+            )
+        ],
+        weather=WeatherSummary(),
+    )
+
+    finalized = client.finalize_plan_with_routes(request, source, context)
+    activity_poi = finalized.days[0].activities[0].poi
+
+    assert activity_poi is not None
+    assert activity_poi.name == "杭州灵隐寺"
+
+
+def test_finalize_plan_with_routes_matches_activity_to_attraction_by_location_fragments() -> None:
+    settings = Settings()
+    client = TravelAIClient(settings)
+    request = _build_request(days=1, adults=2)
+    source = _build_plan(days=1)
+    source.days[0].activities = [
+        Activity(
+            start_time="09:00",
+            end_time="11:00",
+            title="西湖晨游",
+            category="sightseeing",
+            description="desc",
+            location_name="西湖",
+        )
+    ]
+    context = PlanningContext(
+        destination="杭州",
+        attractions=[
+            POIRecommendation(
+                name="杭州西湖名胜区",
+                address="西湖区龙井路1号",
+                district="西湖区",
+                longitude=120.1551,
+                latitude=30.2376,
+            )
+        ],
+        weather=WeatherSummary(),
+    )
+
+    finalized = client.finalize_plan_with_routes(request, source, context)
+    activity_poi = finalized.days[0].activities[0].poi
+
+    assert activity_poi is not None
+    assert activity_poi.name == "杭州西湖名胜区"

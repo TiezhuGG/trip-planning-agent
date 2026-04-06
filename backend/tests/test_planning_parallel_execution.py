@@ -116,6 +116,64 @@ def test_generate_runs_hotel_and_weather_in_parallel() -> None:
             AgentExecution(agent_name="route_agent", success=True),
         )
 
+    async def fake_bind_plan_truth(
+        request: TripPlanningRequest,
+        plan: TravelPlan,
+        context,
+        trace: list[ToolCallRecord],
+    ):
+        _ = (request, context, trace)
+        plan.days[0].map_pois = []
+        return (
+            plan.model_copy(
+                update={
+                    "days": [
+                        plan.days[0].model_copy(
+                            update={
+                                "map_pois": [
+                                    {
+                                        "kind": "activity",
+                                        "label": "Activity 1",
+                                        "poi": {
+                                            "name": "Attraction A",
+                                            "poi_id": None,
+                                            "address": "Center",
+                                            "tags": [],
+                                            "rating": None,
+                                            "recommended_duration_minutes": None,
+                                            "opening_hours": None,
+                                            "district": "Center",
+                                            "longitude": 120.0,
+                                            "latitude": 30.0,
+                                            "source": None,
+                                        },
+                                    },
+                                    {
+                                        "kind": "stay",
+                                        "label": "Hotel A",
+                                        "poi": {
+                                            "name": "Hotel A",
+                                            "poi_id": None,
+                                            "address": "Center",
+                                            "tags": [],
+                                            "rating": None,
+                                            "recommended_duration_minutes": None,
+                                            "opening_hours": None,
+                                            "district": "Center",
+                                            "longitude": 120.1,
+                                            "latitude": 30.1,
+                                            "source": None,
+                                        },
+                                    },
+                                ]
+                            }
+                        )
+                    ]
+                }
+            ),
+            AgentExecution(agent_name="plan_truth_agent", success=True),
+        )
+
     async def fake_compose_gather(
         request: TripPlanningRequest,
         initial_plan: InitialPlanDraft,
@@ -184,6 +242,7 @@ def test_generate_runs_hotel_and_weather_in_parallel() -> None:
     coordinator.meal_agent.gather = fake_meal_gather
     coordinator.meal_agent.bind_daily_meals = fake_bind_daily_meals
     coordinator.route_agent.gather_for_plan = fake_route_gather
+    coordinator.route_agent.bind_plan_truth = fake_bind_plan_truth
     coordinator.composer_agent.gather = fake_compose_gather
 
     request = TripPlanningRequest(
@@ -290,6 +349,15 @@ def test_generate_exposes_fallback_flag_from_agents() -> None:
             AgentExecution(agent_name="route_agent", success=True),
         )
 
+    async def fake_bind_plan_truth(
+        request: TripPlanningRequest,
+        plan: TravelPlan,
+        context,
+        trace: list[ToolCallRecord],
+    ):
+        _ = (request, context, trace)
+        return plan, AgentExecution(agent_name="plan_truth_agent", success=True)
+
     async def fake_compose_gather(
         request: TripPlanningRequest,
         initial_plan: InitialPlanDraft,
@@ -358,6 +426,7 @@ def test_generate_exposes_fallback_flag_from_agents() -> None:
     coordinator.meal_agent.gather = fake_meal_gather
     coordinator.meal_agent.bind_daily_meals = fake_bind_daily_meals
     coordinator.route_agent.gather_for_plan = fake_route_gather
+    coordinator.route_agent.bind_plan_truth = fake_bind_plan_truth
     coordinator.composer_agent.gather = fake_compose_gather
 
     request = TripPlanningRequest(
