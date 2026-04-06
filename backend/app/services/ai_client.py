@@ -16,11 +16,13 @@ from app.schemas.planning import (
     BudgetBreakdown,
     DayCostBreakdown,
     DailyForecast,
+    DayPOI,
     DayPlan,
     DayStayInfo,
     InitialPlanDay,
     InitialPlanDraft,
     MealRecommendation,
+    POIRecommendation,
     PlanningContext,
     RouteSummary,
     RouteStep,
@@ -486,7 +488,8 @@ class TravelAIClient:
         plan = TravelPlan.model_validate(normalized_payload)
         plan = self._normalize_plan_days(request, plan, context)
         self._ensure_final_plan_integrity(request, plan, require_routes=bool(context.routes))
-        return self._apply_deterministic_budget(request, plan)
+        plan = self._apply_deterministic_budget(request, plan)
+        return self._attach_plan_truth(plan, context, request.destination)
 
     def finalize_plan_with_routes(
         self,
@@ -496,7 +499,8 @@ class TravelAIClient:
     ) -> TravelPlan:
         plan = self._normalize_plan_days(request, plan, context)
         self._ensure_final_plan_integrity(request, plan, require_routes=True)
-        return self._apply_deterministic_budget(request, plan)
+        plan = self._apply_deterministic_budget(request, plan)
+        return self._attach_plan_truth(plan, context, request.destination)
 
     def _normalize_compose_payload(
         self,
@@ -1021,12 +1025,6 @@ class TravelAIClient:
                         }
                     )
                 )
-            normalized_activities = self._ensure_day_activity_coverage(
-                day=day,
-                activities=normalized_activities,
-                context=context,
-            )
-
             room_nightly_cost_cny = stay.room_nightly_cost_cny
             if room_nightly_cost_cny <= 0 and stays:
                 room_nightly_cost_cny = self._extract_cny_amount(stays[day_index % len(stays)].nightly_budget)
@@ -1177,17 +1175,8 @@ class TravelAIClient:
         activities: list[Activity],
         context: PlanningContext,
     ) -> list[Activity]:
-        if not activities:
-            return activities
-        if len(activities) >= 2 and max(activity.end_time for activity in activities if activity.end_time) >= "15:00":
-            return activities
-
-        supplemented = list(activities)
-        used_locations = {self._normalize_location_text(item.location_name) for item in supplemented if item.location_name}
-        supplemental = self._pick_supplemental_activity(day, context, used_locations)
-        if supplemental is not None:
-            supplemented.append(supplemental)
-        return supplemented
+        _ = (day, context)
+        return activities
 
     def _pick_supplemental_activity(
         self,
@@ -1613,6 +1602,165 @@ class TravelAIClient:
             )
         return fallback
 
+    def _attach_plan_truth(
+        self,
+        plan: TravelPlan,
+        context: PlanningContext,
+        destination: str,
+    ) -> TravelPlan:
+        updated_days: list[DayPlan] = []
+        for day in sorted(plan.days, key=lambda item: item.day_number):
+            day_fallbacks: list[str] = []
+            map_pois: list[DayPOI] = []
+
+            stay_lookup = day.stay.hotel_name or day.hotel_area
+            stay_poi = self._resolve_final_poi(
+                lookup_name=stay_lookup,
+                candidates=context.hotels,
+                destination=destination,
+                fallback_name=stay_lookup,
+            )
+            if stay_lookup and stay_poi is not None and stay_poi.source == "manual_placeholder":
+                day_fallbacks.append("stay_poi_unresolved")
+            updated_stay = day.stay.model_copy(update={"poi": stay_poi})
+            if stay_poi is not None and updated_stay.hotel_name:
+                map_pois.append(DayPOI(kind="stay", label=updated_stay.hotel_name, poi=stay_poi))
+
+            updated_activities: list[Activity] = []
+            for activity in day.activities:
+                activity_poi = self._resolve_final_poi(
+                    lookup_name=activity.location_name,
+                    candidates=[*context.attractions, *context.restaurants, *context.hotels],
+                    destination=destination,
+                    fallback_name=activity.location_name,
+                )
+                if activity.location_name and activity_poi is not None and activity_poi.source == "manual_placeholder":
+                    day_fallbacks.append(f"activity_poi_unresolved:{activity.location_name}")
+                updated_activity = activity.model_copy(update={"poi": activity_poi})
+                updated_activities.append(updated_activity)
+                if activity_poi is not None:
+                    map_pois.append(
+                        DayPOI(
+                            kind="activity",
+                            label=activity.title or activity.location_name,
+                            poi=activity_poi,
+                        )
+                    )
+
+            updated_meals: list[MealRecommendation] = []
+            for meal in day.meals:
+                meal_poi = None
+                if meal.venue_name:
+                    meal_poi = self._resolve_final_poi(
+                        lookup_name=meal.venue_name,
+                        candidates=context.restaurants,
+                        destination=destination,
+                        fallback_name=meal.venue_name,
+                    )
+                    if meal_poi is not None and meal_poi.source == "manual_placeholder" and meal.meal_type == "breakfast":
+                        meal_poi = updated_stay.poi
+                updated_meal = meal.model_copy(update={"poi": meal_poi})
+                updated_meals.append(updated_meal)
+                if meal_poi is not None:
+                    map_pois.append(
+                        DayPOI(
+                            kind="meal",
+                            label=meal.meal_type,
+                            poi=meal_poi,
+                        )
+                    )
+
+            route_segments = list(day.route_summaries)
+            if not route_segments and day.route_summary is not None:
+                route_segments = [day.route_summary]
+            if updated_activities and not route_segments:
+                day_fallbacks.append("route_summary_missing")
+
+            updated_days.append(
+                day.model_copy(
+                    update={
+                        "stay": updated_stay,
+                        "activities": updated_activities,
+                        "meals": updated_meals,
+                        "route_segments": route_segments,
+                        "map_pois": self._dedupe_day_pois(map_pois),
+                        "fallbacks": sorted(set(day.fallbacks + day_fallbacks)),
+                    }
+                )
+            )
+
+        return plan.model_copy(update={"days": updated_days})
+
+    def _resolve_final_poi(
+        self,
+        lookup_name: str,
+        candidates: list[POIRecommendation],
+        destination: str,
+        fallback_name: str = "",
+    ) -> POIRecommendation | None:
+        normalized_lookup = self._normalize_location_text(lookup_name)
+        if not normalized_lookup:
+            return None
+
+        matched = self._match_named_poi(normalized_lookup, candidates)
+        if matched is not None:
+            return self._ensure_display_ready_poi(matched, destination)
+
+        display_name = fallback_name.strip() or lookup_name.strip()
+        if not display_name:
+            return None
+        return POIRecommendation(
+            name=display_name,
+            address=f"{destination}{display_name}",
+            district=destination,
+            source="manual_placeholder",
+        )
+
+    def _match_named_poi(
+        self,
+        normalized_lookup: str,
+        candidates: list[POIRecommendation],
+    ) -> POIRecommendation | None:
+        scored: list[tuple[int, int, int, POIRecommendation]] = []
+        for candidate in candidates:
+            normalized_name = self._normalize_location_text(candidate.name)
+            if not normalized_name:
+                continue
+            exact_penalty = 0 if normalized_name == normalized_lookup else 1
+            contains_penalty = 0 if normalized_lookup in normalized_name or normalized_name in normalized_lookup else 1
+            coordinate_penalty = 0 if candidate.longitude is not None and candidate.latitude is not None else 1
+            if exact_penalty and contains_penalty:
+                continue
+            scored.append((exact_penalty, contains_penalty, coordinate_penalty, candidate))
+
+        if not scored:
+            return None
+        scored.sort(key=lambda item: item[:3])
+        return scored[0][3]
+
+    def _ensure_display_ready_poi(
+        self,
+        poi: POIRecommendation,
+        destination: str,
+    ) -> POIRecommendation:
+        district = poi.district or destination
+        address = poi.address or f"{district}{poi.name}"
+        return poi.model_copy(update={"district": district, "address": address})
+
+    def _dedupe_day_pois(
+        self,
+        items: list[DayPOI],
+    ) -> list[DayPOI]:
+        deduped: list[DayPOI] = []
+        seen: set[str] = set()
+        for item in items:
+            key = item.poi.poi_id or f"{item.kind}:{item.poi.name}:{item.poi.address}"
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(item)
+        return deduped
+
     def _format_nightly_budget(self, room_nightly_cost_cny: int) -> str:
         if room_nightly_cost_cny <= 0:
             return ""
@@ -1863,7 +2011,8 @@ class TravelAIClient:
         plan = self._fallback_plan(request, initial_plan, context)
         plan = self._normalize_plan_days(request, plan, context)
         self._ensure_final_plan_integrity(request, plan, require_routes=bool(context.routes))
-        return self._apply_deterministic_budget(request, plan)
+        plan = self._apply_deterministic_budget(request, plan)
+        return self._attach_plan_truth(plan, context, request.destination)
 
     def _fallback_route_summary(
         self,

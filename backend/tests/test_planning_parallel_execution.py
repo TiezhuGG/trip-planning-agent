@@ -198,6 +198,8 @@ def test_generate_runs_hotel_and_weather_in_parallel() -> None:
         )
     )
     assert result.status == "success"
+    assert result.plan.days[0].map_pois
+    assert result.plan.days[0].route_segments
 
 
 def test_generate_exposes_fallback_flag_from_agents() -> None:
@@ -365,5 +367,7 @@ def test_generate_exposes_fallback_flag_from_agents() -> None:
     )
     result = asyncio.run(coordinator.generate(request, generated_at=datetime.now(UTC)))
 
+    assert result.status == "fallback_success"
     assert result.meta.fallback_used is True
     assert "seed fallback" in result.meta.warnings
+    assert "initial_planning" in result.diagnostics.fallbacks_used

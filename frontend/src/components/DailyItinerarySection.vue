@@ -22,6 +22,7 @@ function toggleDay(dayNumber: number) {
 }
 
 function getDayRoutes(day: DayPlan): RouteSummary[] {
+  if (day.route_segments?.length) return day.route_segments;
   if (day.route_summaries?.length) return day.route_summaries;
   if (day.route_summary) return [day.route_summary];
   return props.routes.filter((route) => route.day_number === day.day_number);

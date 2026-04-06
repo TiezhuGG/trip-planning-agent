@@ -15,7 +15,9 @@ const emit = defineEmits<{
   <article class="rounded-[36px] border border-[#d8e3ee] bg-white p-6 shadow-card">
     <div class="flex items-center justify-between gap-3">
       <div>
-        <div class="text-xs uppercase tracking-[0.28em] text-[#6f7f92]">Developer</div>
+        <div class="text-xs uppercase tracking-[0.28em] text-[#6f7f92]">
+          Developer
+        </div>
         <h3 class="mt-2 text-xl font-semibold text-ink">集成预检查</h3>
       </div>
       <button

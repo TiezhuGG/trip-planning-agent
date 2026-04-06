@@ -100,40 +100,22 @@ const currentIntegrationStatus = computed(
 const itineraryMapPois = computed<POIRecommendation[]>(() => {
   const response = result.value;
   if (!response) return [];
-
-  const activityNames = response.plan.days.flatMap((day) =>
-    day.activities.map((activity) => activity.location_name).filter(Boolean),
-  );
-  const candidates = [
-    ...response.planning_context.attractions,
-    ...response.planning_context.restaurants,
-    ...response.planning_context.hotels,
-  ];
   const selected: POIRecommendation[] = [];
   const seen = new Set<string>();
-
-  for (const activityName of activityNames) {
-    const normalizedActivity = normalizeLocationName(activityName);
-    if (!normalizedActivity) continue;
-    const matched = candidates.find((candidate) => {
-      const normalizedCandidate = normalizeLocationName(candidate.name);
-      if (!normalizedCandidate) return false;
-      return (
-        normalizedCandidate === normalizedActivity ||
-        normalizedCandidate.includes(normalizedActivity) ||
-        normalizedActivity.includes(normalizedCandidate)
-      );
-    });
-    if (!matched) continue;
-
-    const key = matched.poi_id || matched.name;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    selected.push(matched);
+  for (const day of response.plan.days) {
+    for (const item of day.map_pois ?? []) {
+      const key = item.poi.poi_id || `${item.kind}:${item.poi.name}:${item.poi.address}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      selected.push(item.poi);
+    }
   }
-
   return selected;
 });
+const itineraryRoutes = computed(() =>
+  result.value?.plan.days.flatMap((day) => day.route_segments ?? day.route_summaries ?? []) ??
+  [],
+);
 const travelerSummary = computed(() => formatTravelers(form.travelers));
 const inputSummary = computed(() => [
   {
@@ -200,46 +182,16 @@ function closeNotice() {
   noticeModal.title = "";
   noticeModal.messages = [];
 }
-function toUserNotice(message: string) {
-  const lower = message.toLowerCase();
-  if (
-    lower.includes("weather_agent") ||
-    lower.includes("maps_weather") ||
-    lower.includes("forecast") ||
-    lower.includes("天气")
-  ) {
-    return "天气数据暂时不可用，系统已使用现有信息继续完成本次规划。";
-  }
-  if (
-    lower.includes("route") ||
-    lower.includes("driving") ||
-    lower.includes("walking") ||
-    lower.includes("transit") ||
-    lower.includes("路线")
-  ) {
-    return "部分路线数据暂时不可用，系统已保留基础行程安排。";
-  }
-  if (lower.includes("hotel") || lower.includes("住宿")) {
-    return "住宿推荐数据暂时不完整，系统已提供当前可用建议。";
-  }
-  if (
-    lower.includes("poi") ||
-    lower.includes("restaurant") ||
-    lower.includes("maps_text_search") ||
-    lower.includes("景点") ||
-    lower.includes("餐饮")
-  ) {
-    return "部分景点或餐饮数据暂时不可用，系统已尽量补全本次规划。";
-  }
-  if (lower.includes("llm") || lower.includes("大模型")) {
-    return "智能生成阶段使用了备用方案，但行程仍已成功生成。";
-  }
-  return "本次规划过程中有部分数据暂时不可用，系统已尽量完成行程。";
-}
 function toUserError(message: string) {
   const lower = message.toLowerCase();
   if (lower.includes("destination") || message.includes("城市名")) {
     return "目的地仅支持中文城市名，例如：上海、北京市。";
+  }
+  if (lower.includes("限流") || lower.includes("rate limit")) {
+    return "大模型服务当前限流，请稍后重试。";
+  }
+  if (lower.includes("地图服务") || lower.includes("mcp")) {
+    return "地图服务连接异常，请稍后重试。";
   }
   if (
     lower.includes("timeout") ||
@@ -252,11 +204,29 @@ function toUserError(message: string) {
   return "行程暂时生成失败，请稍后重试。";
 }
 function buildPlanNotices(response: PlanningResponse) {
-  const warnings = [
-    ...response.meta.warnings,
-    ...response.integration_status.warnings,
-  ].filter(Boolean);
-  return [...new Set(warnings.map(toUserNotice))];
+  const notices: string[] = [];
+  if (response.status === "fallback_success") {
+    notices.push("智能生成阶段触发了备用方案，本次行程已按可用数据成功生成。");
+  } else if (response.status === "partial_success") {
+    notices.push("本次规划已完成，但部分外部数据源未完全返回。");
+  }
+  for (const item of response.diagnostics.llm) {
+    if (item.fallback_used) {
+      notices.push("大模型生成阶段已切换到备用方案。");
+    }
+  }
+  for (const item of response.diagnostics.mcp) {
+    if (item.status === "error" && item.stage === "weather") {
+      notices.push("天气数据暂时不可用，系统已继续完成本次规划。");
+    } else if (item.status === "error" && item.stage === "route_generation") {
+      notices.push("部分路线数据暂时不可用，系统已保留基础行程安排。");
+    } else if (item.status === "warning" && item.stage === "daily_hotel_binding") {
+      notices.push("部分住宿推荐未完全校正，已保留当前可用结果。");
+    } else if (item.status === "warning" && item.stage === "daily_meal_binding") {
+      notices.push("部分餐饮推荐未完全校正，已保留当前可用结果。");
+    }
+  }
+  return [...new Set(notices)];
 }
 
 function createEmptyIntegrationStatus(): IntegrationStatus {
@@ -333,9 +303,6 @@ function splitText(value: string) {
 }
 function isChineseCityName(value: string) {
   return /^[\u4e00-\u9fff]{2,30}$/.test(value.trim());
-}
-function normalizeLocationName(value: string) {
-  return value.trim().replace(/\s+/g, "").replace(/(风景名胜区|旅游度假区|景区|片区|区域|商圈|古城|街区|寺|店)$/g, "");
 }
 function startProgress() {
   progress.value = 8;
@@ -809,13 +776,13 @@ function budgetLabel(value: TripPlanningRequest["budget_level"]) {
                 <AmapMap
                   :map-config="result.map_config"
                   :pois="itineraryMapPois"
-                  :routes="result.planning_context.routes"
+                  :routes="itineraryRoutes"
                 />
               </div>
             </article>
             <DailyItinerarySection
               :days="result.plan.days"
-              :routes="result.planning_context.routes"
+              :routes="itineraryRoutes"
               :weather-forecasts="
                 result.planning_context.weather.daily_forecasts
               "

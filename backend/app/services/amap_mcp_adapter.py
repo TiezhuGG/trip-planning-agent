@@ -45,8 +45,8 @@ class AmapMCPAdapter:
         self._tool_catalog_cached_at: float = 0.0
         self._tool_catalog_ttl_seconds = 60.0
         self._resolved_tools: dict[str, str] = {}
-        self._poi_detail_concurrency = 4
-        self._poi_detail_limit = 8
+        self._poi_detail_concurrency = 2
+        self._poi_detail_limit = 4
         self._poi_detail_cache: dict[str, POIRecommendation] = {}
         self._route_location_cache: dict[str, str] = {}
         self._route_location_cache_limit = 512
@@ -829,46 +829,57 @@ class AmapMCPAdapter:
         if not detail_tool_name:
             return pois
 
-        semaphore = asyncio.Semaphore(self._poi_detail_concurrency)
         limit = min(len(pois), self._poi_detail_limit)
         candidates = pois[:limit]
+        semaphore = asyncio.Semaphore(self._poi_detail_concurrency)
         pending: dict[str, asyncio.Task[POIRecommendation]] = {}
 
-        async def _enrich_one(index: int, poi: POIRecommendation) -> tuple[int, POIRecommendation]:
+        async def _detail_task(poi: POIRecommendation) -> POIRecommendation:
+            assert poi.poi_id is not None
+            async with semaphore:
+                raw = await self._call_tool_for_purpose(
+                    "poi_search",
+                    {"id": poi.poi_id},
+                    trace,
+                    tool_name_override=detail_tool_name,
+                )
+                enriched = self._normalize_poi_detail(raw, poi)
+                self._poi_detail_cache[poi.poi_id] = enriched
+                return enriched
+
+        async def _enrich_one(poi: POIRecommendation) -> POIRecommendation:
             if not poi.poi_id:
-                return index, poi
+                return poi
             if self._poi_detail_is_complete(poi, category=category):
-                return index, poi
+                return poi
             cached = self._poi_detail_cache.get(poi.poi_id)
             if cached is not None:
-                return index, cached
+                return cached
 
-            async def _fetch_detail() -> POIRecommendation:
-                async with semaphore:
-                    raw = await self._call_tool_for_purpose(
-                        "poi_search",
-                        {"id": poi.poi_id},
-                        trace,
-                        tool_name_override=detail_tool_name,
-                    )
-                    enriched = self._normalize_poi_detail(raw, poi)
-                    self._poi_detail_cache[poi.poi_id or ""] = enriched
-                    return enriched
+            task = pending.get(poi.poi_id)
+            if task is None:
+                task = asyncio.create_task(_detail_task(poi))
+                pending[poi.poi_id] = task
+            return await task
 
-            try:
-                task = pending.get(poi.poi_id)
-                if task is None:
-                    task = asyncio.create_task(_fetch_detail())
-                    pending[poi.poi_id] = task
-                return index, await task
-            except Exception:
-                return index, poi
-
-        enriched_items = await asyncio.gather(
-            *[_enrich_one(index, poi) for index, poi in enumerate(candidates)]
-        )
-        enriched_items.sort(key=lambda item: item[0])
-        enriched_prefix = [item[1] for item in enriched_items]
+        enriched_prefix: list[POIRecommendation] = []
+        for batch_start in range(0, len(candidates), self._poi_detail_concurrency):
+            batch = candidates[batch_start : batch_start + self._poi_detail_concurrency]
+            results = await asyncio.gather(
+                *[_enrich_one(poi) for poi in batch],
+                return_exceptions=True,
+            )
+            should_stop = False
+            for poi, result in zip(batch, results):
+                if isinstance(result, Exception):
+                    enriched_prefix.append(poi)
+                    if self._is_rate_limit_error(result):
+                        should_stop = True
+                    continue
+                enriched_prefix.append(result)
+            if should_stop:
+                enriched_prefix.extend(candidates[batch_start + len(batch) :])
+                break
         return enriched_prefix + pois[limit:]
 
     def _poi_detail_is_complete(
@@ -955,11 +966,16 @@ class AmapMCPAdapter:
         deduped_queries = self._dedupe_queries(queries)
         for citylimit in ("true", "false"):
             for query in deduped_queries:
-                raw = await self._call_tool_for_purpose(
-                    "poi_search",
-                    self._build_poi_search_arguments(city, query, citylimit=citylimit),
-                    trace,
-                )
+                try:
+                    raw = await self._call_tool_for_purpose(
+                        "poi_search",
+                        self._build_poi_search_arguments(city, query, citylimit=citylimit),
+                        trace,
+                    )
+                except Exception as exc:
+                    if self._is_rate_limit_error(exc):
+                        return self._merge_unique_pois(pois)
+                    raise
                 pois.extend(self._normalize_pois(raw, fallback_kind=fallback_kind))
                 merged = self._merge_unique_pois(pois)
                 if len(merged) >= target_count:

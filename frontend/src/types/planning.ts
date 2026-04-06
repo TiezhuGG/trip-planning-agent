@@ -49,6 +49,12 @@ export interface POIRecommendation {
   source: string | null
 }
 
+export interface DayPOI {
+  kind: 'activity' | 'meal' | 'stay'
+  label: string
+  poi: POIRecommendation
+}
+
 export interface RouteStep {
   instruction: string
   distance_text: string
@@ -101,6 +107,7 @@ export interface MealRecommendation {
   suggestion: string
   estimated_cost: string
   estimated_cost_cny: number
+  poi?: POIRecommendation | null
 }
 
 export interface Activity {
@@ -114,6 +121,7 @@ export interface Activity {
   expected_cost?: string | null
   ticket_cost_cny: number
   booking_tip?: string | null
+  poi?: POIRecommendation | null
 }
 
 export interface DayStayInfo {
@@ -121,6 +129,7 @@ export interface DayStayInfo {
   hotel_name: string
   reason: string
   room_nightly_cost_cny: number
+  poi?: POIRecommendation | null
 }
 
 export interface DayCostBreakdown {
@@ -146,6 +155,9 @@ export interface DayPlan {
   weather?: DailyForecast | null
   route_summary?: RouteSummary | null
   route_summaries: RouteSummary[]
+  route_segments: RouteSummary[]
+  map_pois: DayPOI[]
+  fallbacks: string[]
 }
 
 export interface StayRecommendation {
@@ -208,6 +220,25 @@ export interface PlanGenerationMeta {
   warnings: string[]
 }
 
+export interface StageDiagnostic {
+  stage: string
+  status: 'ok' | 'warning' | 'fallback' | 'error'
+  summary: string
+  code: string
+  warnings: string[]
+  fallback_used: boolean
+  used_llm: boolean
+  provider: string
+}
+
+export interface PlanDiagnostics {
+  llm: StageDiagnostic[]
+  mcp: StageDiagnostic[]
+  warnings: string[]
+  fallbacks_used: string[]
+  error_code: string
+}
+
 export interface MapRenderConfig {
   provider: 'amap'
   enabled: boolean
@@ -235,7 +266,7 @@ export interface IntegrationStatus {
 }
 
 export interface PlanningResponse {
-  status: 'success'
+  status: 'success' | 'partial_success' | 'fallback_success'
   generated_at: string
   request_echo: TripPlanningRequest
   initial_plan: InitialPlanDraft
@@ -243,6 +274,7 @@ export interface PlanningResponse {
   agent_trace: AgentExecution[]
   tool_trace: ToolCallRecord[]
   meta: PlanGenerationMeta
+  diagnostics: PlanDiagnostics
   map_config: MapRenderConfig
   integration_status: IntegrationStatus
   plan: TravelPlan

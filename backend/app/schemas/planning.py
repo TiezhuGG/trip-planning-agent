@@ -60,6 +60,12 @@ class POIRecommendation(BaseModel):
     source: str | None = None
 
 
+class DayPOI(BaseModel):
+    kind: Literal["activity", "meal", "stay"]
+    label: str = ""
+    poi: POIRecommendation
+
+
 class RouteStep(BaseModel):
     instruction: str
     distance_text: str = ""
@@ -112,6 +118,7 @@ class MealRecommendation(BaseModel):
     suggestion: str = ""
     estimated_cost: str = ""
     estimated_cost_cny: int = Field(default=0, ge=0)
+    poi: POIRecommendation | None = None
 
 
 class Activity(BaseModel):
@@ -125,6 +132,7 @@ class Activity(BaseModel):
     expected_cost: str | None = None
     ticket_cost_cny: int = Field(default=0, ge=0)
     booking_tip: str | None = None
+    poi: POIRecommendation | None = None
 
 
 class DayStayInfo(BaseModel):
@@ -132,6 +140,7 @@ class DayStayInfo(BaseModel):
     hotel_name: str = ""
     reason: str = ""
     room_nightly_cost_cny: int = Field(default=0, ge=0)
+    poi: POIRecommendation | None = None
 
 
 class DayCostBreakdown(BaseModel):
@@ -157,6 +166,9 @@ class DayPlan(BaseModel):
     weather: DailyForecast | None = None
     route_summary: RouteSummary | None = None
     route_summaries: list[RouteSummary] = Field(default_factory=list)
+    route_segments: list[RouteSummary] = Field(default_factory=list)
+    map_pois: list[DayPOI] = Field(default_factory=list)
+    fallbacks: list[str] = Field(default_factory=list)
 
 
 class StayRecommendation(BaseModel):
@@ -219,6 +231,25 @@ class PlanGenerationMeta(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class StageDiagnostic(BaseModel):
+    stage: str
+    status: Literal["ok", "warning", "fallback", "error"] = "ok"
+    summary: str = ""
+    code: str = ""
+    warnings: list[str] = Field(default_factory=list)
+    fallback_used: bool = False
+    used_llm: bool = False
+    provider: str = ""
+
+
+class PlanDiagnostics(BaseModel):
+    llm: list[StageDiagnostic] = Field(default_factory=list)
+    mcp: list[StageDiagnostic] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    fallbacks_used: list[str] = Field(default_factory=list)
+    error_code: str = ""
+
+
 class MapRenderConfig(BaseModel):
     provider: Literal["amap"] = "amap"
     enabled: bool = False
@@ -246,7 +277,7 @@ class IntegrationStatus(BaseModel):
 
 
 class PlanningResponse(BaseModel):
-    status: Literal["success"] = "success"
+    status: Literal["success", "partial_success", "fallback_success"] = "success"
     generated_at: datetime
     request_echo: TripPlanningRequest
     initial_plan: InitialPlanDraft
@@ -254,6 +285,7 @@ class PlanningResponse(BaseModel):
     agent_trace: list[AgentExecution] = Field(default_factory=list)
     tool_trace: list[ToolCallRecord] = Field(default_factory=list)
     meta: PlanGenerationMeta = Field(default_factory=PlanGenerationMeta)
+    diagnostics: PlanDiagnostics = Field(default_factory=PlanDiagnostics)
     map_config: MapRenderConfig = Field(default_factory=MapRenderConfig)
     integration_status: IntegrationStatus = Field(default_factory=IntegrationStatus)
     plan: TravelPlan

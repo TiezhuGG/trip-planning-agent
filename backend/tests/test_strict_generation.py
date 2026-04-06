@@ -373,7 +373,7 @@ def test_normalize_plan_days_rebuilds_stay_recommendations_from_daily_stays() ->
     assert normalized.stay_recommendations[0].nightly_budget == "¥500/晚"
 
 
-def test_normalize_plan_days_adds_supplemental_activity_when_day_ends_too_early() -> None:
+def test_normalize_plan_days_keeps_existing_activities_without_fabricating_extra_items() -> None:
     settings = Settings()
     client = TravelAIClient(settings)
     request = _build_request(days=1, adults=2)
@@ -398,5 +398,82 @@ def test_normalize_plan_days_adds_supplemental_activity_when_day_ends_too_early(
     normalized = client._normalize_plan_days(request, source, context)
     day = normalized.days[0]
 
-    assert len(day.activities) >= 2
-    assert day.activities[-1].start_time >= "14:00"
+    assert len(day.activities) == 1
+
+
+def test_finalize_plan_with_routes_attaches_day_truth_fields() -> None:
+    settings = Settings()
+    client = TravelAIClient(settings)
+    request = _build_request(days=1, adults=2)
+    source = _build_plan(days=1)
+    source.days[0].stay = DayStayInfo(
+        area="西街片区",
+        hotel_name="泉州西街行舍(开元寺店)",
+        reason="靠近开元寺与西街",
+        room_nightly_cost_cny=500,
+    )
+    source.days[0].activities = [
+        Activity(
+            start_time="09:00",
+            end_time="11:00",
+            title="开元寺",
+            category="sightseeing",
+            description="desc",
+            location_name="开元寺",
+        )
+    ]
+    source.days[0].meals = [
+        MealRecommendation(meal_type="lunch", venue_name="升文老字号扁食店")
+    ]
+    context = PlanningContext(
+        destination="泉州",
+        attractions=[
+            POIRecommendation(
+                name="开元寺",
+                address="鲤城区西街176号",
+                district="鲤城区",
+                longitude=118.6701,
+                latitude=24.9135,
+            )
+        ],
+        restaurants=[
+            POIRecommendation(
+                name="升文老字号扁食店",
+                address="鲤城区西街",
+                district="鲤城区",
+                longitude=118.6698,
+                latitude=24.9131,
+            )
+        ],
+        hotels=[
+            POIRecommendation(
+                name="泉州西街行舍(开元寺店)",
+                address="鲤城区西街",
+                district="鲤城区",
+                longitude=118.6692,
+                latitude=24.9129,
+            )
+        ],
+        routes=[
+            RouteSummary(
+                day_number=1,
+                from_name="泉州西街行舍(开元寺店)",
+                to_name="开元寺",
+                title="第 1 天路线 1",
+            )
+        ],
+        weather=WeatherSummary(),
+    )
+
+    finalized = client.finalize_plan_with_routes(request, source, context)
+    day = finalized.days[0]
+
+    assert day.activities[0].poi is not None
+    assert day.activities[0].poi.name == "开元寺"
+    assert day.stay.poi is not None
+    assert day.stay.poi.name == "泉州西街行舍(开元寺店)"
+    lunch = next(meal for meal in day.meals if meal.meal_type == "lunch")
+    assert lunch.poi is not None
+    assert lunch.poi.name == "升文老字号扁食店"
+    assert day.route_segments
+    assert {item.kind for item in day.map_pois} >= {"activity", "meal", "stay"}

@@ -129,7 +129,7 @@ onBeforeUnmount(() => {
             type="button"
             class="flex h-10 w-10 items-center justify-center rounded-full text-xl leading-none transition"
             :class="toneConfig.close"
-            aria-label="关闭提醒"
+            aria-label="关闭提示"
             @click="closeModal"
           >
             ×
