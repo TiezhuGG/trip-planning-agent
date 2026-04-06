@@ -4,12 +4,17 @@ from datetime import date
 from app.agents.route_agent import RoutePlanningAgent
 from app.config import Settings
 from app.schemas.planning import (
+    Activity,
     AgentExecution,
+    BudgetBreakdown,
+    DayPlan,
     InitialPlanDay,
     InitialPlanDraft,
     POIRecommendation,
+    PlanningContext,
     RouteSummary,
     ToolCallRecord,
+    TravelPlan,
     TripPlanningRequest,
 )
 from app.services.amap_mcp_adapter import AmapMCPAdapter, MCPProtocolError
@@ -313,3 +318,114 @@ def test_route_agent_falls_back_to_global_attractions_for_coordinates() -> None:
 
     assert len(routes) == 1
     assert routes[0].to_name == "A-coord"
+
+
+def test_route_agent_gather_for_plan_uses_final_activity_order() -> None:
+    class FakeAdapter:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        async def plan_route(
+            self,
+            day_number: int,
+            origin: POIRecommendation,
+            destination: POIRecommendation,
+            waypoints: list[POIRecommendation],
+            mode: str,
+            trace: list[ToolCallRecord],
+        ) -> RouteSummary:
+            _ = (waypoints, mode, trace)
+            self.calls.append((origin.name, destination.name))
+            return RouteSummary(
+                day_number=day_number,
+                title="route",
+                from_name=origin.name,
+                to_name=destination.name,
+                mode="walking",
+            )
+
+        async def resolve_location_candidate(
+            self,
+            city: str,
+            location_name: str,
+            trace: list[ToolCallRecord],
+            anchor_pois: list[POIRecommendation] | None = None,
+        ) -> POIRecommendation | None:
+            _ = (city, location_name, trace, anchor_pois)
+            return None
+
+    agent = RoutePlanningAgent(FakeAdapter())  # type: ignore[arg-type]
+    request = TripPlanningRequest(
+        destination="\u676d\u5dde",
+        start_date=date(2026, 3, 20),
+        days=1,
+        transport_preferences=["\u6b65\u884c"],
+    )
+    plan = TravelPlan(
+        title="Plan",
+        summary="Summary",
+        weather_summary="",
+        best_booking_tip="Tip",
+        estimated_budget=BudgetBreakdown(),
+        stay_recommendations=[],
+        city_tips=[],
+        packing_list=[],
+        days=[
+            DayPlan(
+                day_number=1,
+                date="2026-03-20",
+                theme="Day 1",
+                overview="Overview",
+                hotel_area="West Lake",
+                activities=[
+                    Activity(
+                        start_time="09:00",
+                        end_time="10:00",
+                        title="A2",
+                        category="sightseeing",
+                        description="desc",
+                        location_name="Second Spot",
+                    ),
+                    Activity(
+                        start_time="10:30",
+                        end_time="12:00",
+                        title="A1",
+                        category="sightseeing",
+                        description="desc",
+                        location_name="First Spot",
+                    ),
+                ],
+                route_summaries=[],
+                meals=[],
+            )
+        ],
+    )
+    context = PlanningContext(
+        destination="\u676d\u5dde",
+        attractions=[
+            POIRecommendation(name="Candidate Pool First", longitude=120.20, latitude=30.26),
+            POIRecommendation(name="First Spot", longitude=120.21, latitude=30.27),
+            POIRecommendation(name="Second Spot", longitude=120.19, latitude=30.25),
+        ],
+        hotels=[POIRecommendation(name="Hotel A", address="West Lake", longitude=120.18, latitude=30.24)],
+    )
+
+    routes, trace = asyncio.run(agent.gather_for_plan(request, plan, context, []))
+
+    assert trace.success is True
+    assert [(route.from_name, route.to_name) for route in routes] == [
+        ("Hotel A", "Second Spot"),
+        ("Second Spot", "First Spot"),
+    ]
+
+
+def test_filter_pois_by_geo_scope_excludes_far_cross_city_candidates() -> None:
+    adapter = AmapMCPAdapter(Settings(amap_mcp_command="uvx"))
+    pois = [
+        POIRecommendation(name="\u897f\u6e56", longitude=120.1303, latitude=30.2400, district="\u676d\u5dde"),
+        POIRecommendation(name="\u57c2\u4e91\u901a\u5929\u6cb3", longitude=119.6910, latitude=29.8190, district="\u6850\u5e90"),
+    ]
+
+    filtered = adapter._filter_pois_by_geo_scope(city="\u676d\u5dde", pois=pois, radius_km=35)
+
+    assert [poi.name for poi in filtered] == ["\u897f\u6e56"]

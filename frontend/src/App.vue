@@ -14,6 +14,7 @@ import PlannerLaunchPanel from "./components/PlannerLaunchPanel.vue";
 import TravelTonePanel from "./components/TravelTonePanel.vue";
 import type {
   IntegrationStatus,
+  POIRecommendation,
   PlanningResponse,
   TripPlanningRequest,
   TravelerProfile,
@@ -96,6 +97,43 @@ let progressTimer: number | null = null;
 const currentIntegrationStatus = computed(
   () => result.value?.integration_status ?? integrationStatus.value,
 );
+const itineraryMapPois = computed<POIRecommendation[]>(() => {
+  const response = result.value;
+  if (!response) return [];
+
+  const activityNames = response.plan.days.flatMap((day) =>
+    day.activities.map((activity) => activity.location_name).filter(Boolean),
+  );
+  const candidates = [
+    ...response.planning_context.attractions,
+    ...response.planning_context.restaurants,
+    ...response.planning_context.hotels,
+  ];
+  const selected: POIRecommendation[] = [];
+  const seen = new Set<string>();
+
+  for (const activityName of activityNames) {
+    const normalizedActivity = normalizeLocationName(activityName);
+    if (!normalizedActivity) continue;
+    const matched = candidates.find((candidate) => {
+      const normalizedCandidate = normalizeLocationName(candidate.name);
+      if (!normalizedCandidate) return false;
+      return (
+        normalizedCandidate === normalizedActivity ||
+        normalizedCandidate.includes(normalizedActivity) ||
+        normalizedActivity.includes(normalizedCandidate)
+      );
+    });
+    if (!matched) continue;
+
+    const key = matched.poi_id || matched.name;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    selected.push(matched);
+  }
+
+  return selected;
+});
 const travelerSummary = computed(() => formatTravelers(form.travelers));
 const inputSummary = computed(() => [
   {
@@ -295,6 +333,9 @@ function splitText(value: string) {
 }
 function isChineseCityName(value: string) {
   return /^[\u4e00-\u9fff]{2,30}$/.test(value.trim());
+}
+function normalizeLocationName(value: string) {
+  return value.trim().replace(/\s+/g, "").replace(/(风景名胜区|旅游度假区|景区|片区|区域|商圈|古城|街区|寺|店)$/g, "");
 }
 function startProgress() {
   progress.value = 8;
@@ -767,7 +808,7 @@ function budgetLabel(value: TripPlanningRequest["budget_level"]) {
               <div class="mt-5">
                 <AmapMap
                   :map-config="result.map_config"
-                  :pois="result.planning_context.attractions"
+                  :pois="itineraryMapPois"
                   :routes="result.planning_context.routes"
                 />
               </div>

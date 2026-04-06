@@ -8,6 +8,17 @@ from app.schemas.planning import TripPlanningRequest
 from app.services.ai_client import TravelAIClient
 
 
+def _settings() -> Settings:
+    return Settings(
+        openai_api_key="",
+        openai_base_url="",
+        openai_model="",
+        openai_backup_api_key="",
+        openai_backup_base_url="",
+        openai_backup_model="",
+    )
+
+
 def _request(days: int = 3) -> TripPlanningRequest:
     return TripPlanningRequest(
         destination="上海",
@@ -36,7 +47,7 @@ def _initial_payload(days: int) -> dict:
 
 
 def test_seed_retries_on_provider_400_and_succeeds() -> None:
-    client = TravelAIClient(Settings())
+    client = TravelAIClient(_settings())
     client.client = object()
     request = _request(days=3)
     calls = {"count": 0}
@@ -61,7 +72,7 @@ def test_seed_retries_on_provider_400_and_succeeds() -> None:
 
 
 def test_seed_fails_after_exhausting_retries() -> None:
-    client = TravelAIClient(Settings())
+    client = TravelAIClient(_settings())
     client.client = object()
     request = _request(days=3)
     calls = {"count": 0}
@@ -80,7 +91,7 @@ def test_seed_fails_after_exhausting_retries() -> None:
 
 
 def test_seed_falls_back_on_provider_rate_limit() -> None:
-    client = TravelAIClient(Settings())
+    client = TravelAIClient(_settings())
     client.client = object()
     request = _request(days=3)
     calls = {"count": 0}
@@ -105,11 +116,11 @@ def test_seed_falls_back_on_provider_rate_limit() -> None:
 
 
 def test_seed_switches_to_backup_model_on_provider_rate_limit() -> None:
-    client = TravelAIClient(Settings())
+    client = TravelAIClient(_settings())
     primary = object()
     backup = object()
     request = _request(days=3)
-    backup_client = TravelAIClient(Settings())
+    backup_client = TravelAIClient(_settings())
 
     client.client = primary
     client.primary_model = "primary-model"

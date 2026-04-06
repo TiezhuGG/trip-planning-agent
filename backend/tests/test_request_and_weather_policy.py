@@ -121,13 +121,11 @@ def test_generate_keeps_working_when_weather_unavailable() -> None:
 
     async def fake_route_gather(
         request: TripPlanningRequest,
-        initial_plan: InitialPlanDraft,
-        attractions: list[POIRecommendation],
-        hotels: list[POIRecommendation],
-        day_restaurants: dict[int, list[POIRecommendation]],
+        plan: TravelPlan,
+        context,
         trace: list[ToolCallRecord],
     ) -> tuple[list[RouteSummary], AgentExecution]:
-        _ = (request, initial_plan, attractions, hotels, day_restaurants, trace)
+        _ = (request, plan, context, trace)
         routes = [
             RouteSummary(day_number=1, from_name="Hotel A", to_name="Attraction A"),
             RouteSummary(day_number=2, from_name="Hotel A", to_name="Attraction B"),
@@ -203,14 +201,34 @@ def test_generate_keeps_working_when_weather_unavailable() -> None:
         trace = AgentExecution(agent_name="itinerary_composer_agent", success=True)
         return plan, trace, True, False, []
 
+    async def fake_bind_daily_stays(
+        request: TripPlanningRequest,
+        plan: TravelPlan,
+        context,
+        trace: list[ToolCallRecord],
+    ):
+        _ = (request, context, trace)
+        return plan, [POIRecommendation(name="Hotel A", address="Center")], AgentExecution(agent_name="hotel_binding_agent", success=True)
+
+    async def fake_bind_daily_meals(
+        request: TripPlanningRequest,
+        plan: TravelPlan,
+        context,
+        trace: list[ToolCallRecord],
+    ):
+        _ = (request, context, trace)
+        return plan, [POIRecommendation(name="Restaurant A", address="Center")], AgentExecution(agent_name="meal_binding_agent", success=True)
+
     coordinator.adapter.diagnose = fake_adapter_diagnose
     coordinator.ai_client.diagnose = fake_llm_diagnose
     coordinator.seed_agent.gather = fake_seed_gather
     coordinator.sight_agent.gather = fake_sight_gather
     coordinator.hotel_agent.gather = fake_hotel_gather
+    coordinator.hotel_agent.bind_daily_stays = fake_bind_daily_stays
     coordinator.weather_agent.gather = fake_weather_gather
     coordinator.meal_agent.gather = fake_meal_gather
-    coordinator.route_agent.gather = fake_route_gather
+    coordinator.meal_agent.bind_daily_meals = fake_bind_daily_meals
+    coordinator.route_agent.gather_for_plan = fake_route_gather
     coordinator.composer_agent.gather = fake_compose_gather
 
     request = TripPlanningRequest(

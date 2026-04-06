@@ -32,7 +32,6 @@ defineProps<{
         >
           <div class="font-medium text-ink">{{ stay.area }}</div>
           <div class="mt-2">{{ stay.hotel_name }}</div>
-          <div class="mt-2 text-xs leading-6 text-slate-500">{{ stay.reason }}</div>
           <div class="mt-3 text-xs text-[#2f5a81]">{{ stay.nightly_budget }}</div>
         </div>
       </div>

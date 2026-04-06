@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import asyncio
+import math
 import re
 import time
 from contextlib import asynccontextmanager
@@ -165,7 +166,13 @@ class AmapMCPAdapter:
             fallback_kind="景点",
             target_count=10,
         )
-        return await self._enrich_pois_with_details(merged, trace)
+        enriched = await self._enrich_pois_with_details(merged, trace, category="attraction")
+        filtered = self._filter_pois_by_geo_scope(
+            city=request.destination,
+            pois=enriched,
+            radius_km=35,
+        )
+        return self._sort_pois_by_city_center(request.destination, filtered)
 
     async def fetch_restaurants(
         self,
@@ -190,10 +197,70 @@ class AmapMCPAdapter:
             target_count=8,
         )
         enriched = await self._enrich_pois_with_details(merged, trace)
+        filtered = self._filter_pois_by_geo_scope(
+            city=request.destination,
+            pois=enriched,
+            radius_km=25,
+            anchor_pois=anchor_pois or [],
+        )
         return self._sort_restaurants_for_route(
-            restaurants=enriched,
+            restaurants=filtered,
             city=request.destination,
             anchor_pois=anchor_pois or [],
+        )
+
+    async def fetch_restaurants_for_locations(
+        self,
+        request: TripPlanningRequest,
+        trace: list[ToolCallRecord],
+        location_names: list[str],
+        area_hint: str = "",
+        stay_hint: str = "",
+    ) -> list[POIRecommendation]:
+        anchor_pois: list[POIRecommendation] = []
+        for location_name in self._dedupe_queries([stay_hint, *location_names[:3], area_hint]):
+            resolved = await self.resolve_location_candidate(
+                city=request.destination,
+                location_name=location_name,
+                trace=trace,
+                anchor_pois=anchor_pois,
+            )
+            if resolved is not None:
+                anchor_pois.append(resolved)
+
+        queries: list[str] = []
+        for location_name in self._dedupe_queries(location_names[:3]):
+            queries.extend(
+                [
+                    f"{location_name} 附近 早餐",
+                    f"{location_name} 附近 餐厅",
+                    f"{location_name} 附近 晚餐",
+                ]
+            )
+        if stay_hint:
+            queries.extend([f"{stay_hint} 附近 早餐", f"{stay_hint} 附近 餐厅"])
+        if area_hint:
+            queries.extend([f"{area_hint} 美食", f"{area_hint} 餐厅"])
+        queries.extend(["本地美食", "特色餐厅", "热门餐厅"])
+
+        merged = await self._search_poi_candidates(
+            city=request.destination,
+            queries=queries,
+            trace=trace,
+            fallback_kind="餐厅",
+            target_count=10,
+        )
+        enriched = await self._enrich_pois_with_details(merged, trace)
+        filtered = self._filter_pois_by_geo_scope(
+            city=request.destination,
+            pois=enriched,
+            radius_km=10 if anchor_pois else 20,
+            anchor_pois=anchor_pois,
+        )
+        return self._sort_restaurants_for_route(
+            restaurants=filtered,
+            city=request.destination,
+            anchor_pois=anchor_pois,
         )
 
     async def fetch_hotels(
@@ -211,7 +278,89 @@ class AmapMCPAdapter:
             target_count=10,
         )
         enriched = await self._enrich_pois_with_details(merged, trace)
-        return self._sort_hotels_for_stay(enriched, anchor_pois or [], request.destination)
+        filtered = self._filter_pois_by_geo_scope(
+            city=request.destination,
+            pois=enriched,
+            radius_km=25,
+            anchor_pois=anchor_pois or [],
+        )
+        return self._sort_hotels_for_stay(filtered, anchor_pois or [], request.destination)
+
+    async def fetch_hotels_for_locations(
+        self,
+        request: TripPlanningRequest,
+        trace: list[ToolCallRecord],
+        location_names: list[str],
+        area_hint: str = "",
+    ) -> list[POIRecommendation]:
+        anchor_pois: list[POIRecommendation] = []
+        for location_name in self._dedupe_queries([*location_names[:3], area_hint]):
+            resolved = await self.resolve_location_candidate(
+                city=request.destination,
+                location_name=location_name,
+                trace=trace,
+                anchor_pois=anchor_pois,
+            )
+            if resolved is not None:
+                anchor_pois.append(resolved)
+
+        queries: list[str] = []
+        for location_name in self._dedupe_queries(location_names[:3]):
+            queries.append(f"{location_name} 附近 {request.hotel_style}")
+            queries.append(f"{location_name} 附近 酒店")
+        if area_hint:
+            queries.extend([f"{area_hint} {request.hotel_style}", f"{area_hint} 酒店"])
+        queries.extend([request.hotel_style, f"{request.destination} {request.hotel_style}", "酒店"])
+
+        merged = await self._search_poi_candidates(
+            city=request.destination,
+            queries=queries,
+            trace=trace,
+            fallback_kind="酒店",
+            target_count=8,
+        )
+        enriched = await self._enrich_pois_with_details(merged, trace)
+        filtered = self._filter_pois_by_geo_scope(
+            city=request.destination,
+            pois=enriched,
+            radius_km=12 if anchor_pois else 25,
+            anchor_pois=anchor_pois,
+        )
+        return self._sort_hotels_for_stay(filtered, anchor_pois, request.destination)
+
+    async def resolve_location_candidate(
+        self,
+        city: str,
+        location_name: str,
+        trace: list[ToolCallRecord],
+        anchor_pois: list[POIRecommendation] | None = None,
+    ) -> POIRecommendation | None:
+        query = location_name.strip()
+        if not query:
+            return None
+
+        merged = await self._search_poi_candidates(
+            city=city,
+            queries=[query],
+            trace=trace,
+            fallback_kind="地点",
+            target_count=5,
+        )
+        enriched = await self._enrich_pois_with_details(merged, trace)
+        filtered = self._filter_pois_by_geo_scope(
+            city=city,
+            pois=enriched,
+            radius_km=35,
+            anchor_pois=anchor_pois or [],
+        )
+        if not filtered:
+            return None
+
+        ranked = sorted(
+            filtered,
+            key=lambda poi: self._location_name_match_score(query, poi),
+        )
+        return ranked[0]
 
     async def fetch_weather(
         self, request: TripPlanningRequest, trace: list[ToolCallRecord]
@@ -1353,10 +1502,117 @@ class AmapMCPAdapter:
             key=lambda poi: self._distance_score(poi, center),
         )
 
+    def _filter_pois_by_geo_scope(
+        self,
+        city: str,
+        pois: list[POIRecommendation],
+        radius_km: float,
+        anchor_pois: list[POIRecommendation] | None = None,
+    ) -> list[POIRecommendation]:
+        if not pois:
+            return []
+
+        center = self._anchor_center(anchor_pois or []) if anchor_pois else self._city_center(city)
+        location_tokens = self._location_hint_tokens(city, anchor_pois or [])
+
+        filtered: list[POIRecommendation] = []
+        for poi in pois:
+            if self._poi_within_scope(poi, center, radius_km):
+                filtered.append(poi)
+                continue
+            if (poi.longitude is None or poi.latitude is None) and self._poi_matches_location_tokens(poi, location_tokens):
+                filtered.append(poi)
+
+        if filtered:
+            return self._merge_unique_pois(filtered)
+
+        return self._merge_unique_pois(self._sort_pois_by_city_center(city, pois))
+
     def _distance_score(self, poi: POIRecommendation, center: GeoPoint) -> float:
         if poi.longitude is None or poi.latitude is None:
             return float("inf")
         return (poi.longitude - center.longitude) ** 2 + (poi.latitude - center.latitude) ** 2
+
+    def _poi_within_scope(
+        self,
+        poi: POIRecommendation,
+        center: GeoPoint,
+        radius_km: float,
+    ) -> bool:
+        if poi.longitude is None or poi.latitude is None:
+            return False
+        return self._geo_distance_km(
+            poi.latitude,
+            poi.longitude,
+            center.latitude,
+            center.longitude,
+        ) <= radius_km
+
+    def _location_hint_tokens(
+        self,
+        city: str,
+        anchor_pois: list[POIRecommendation],
+    ) -> set[str]:
+        tokens = {self._normalize_location_token(city)}
+        for poi in anchor_pois:
+            for candidate in (poi.district or "", poi.address or "", poi.name):
+                token = self._normalize_location_token(candidate)
+                if token:
+                    tokens.add(token)
+        return {token for token in tokens if token}
+
+    def _poi_matches_location_tokens(
+        self,
+        poi: POIRecommendation,
+        tokens: set[str],
+    ) -> bool:
+        haystacks = [
+            self._normalize_location_token(poi.district or ""),
+            self._normalize_location_token(poi.address or ""),
+            self._normalize_location_token(poi.name),
+        ]
+        for haystack in haystacks:
+            if not haystack:
+                continue
+            if any(token and token in haystack for token in tokens):
+                return True
+        return False
+
+    def _normalize_location_token(self, value: str) -> str:
+        normalized = re.sub(r"\s+", "", value.strip())
+        for suffix in ("风景名胜区", "旅游度假区", "景区", "街道", "镇", "乡", "村", "市", "区", "县"):
+            if normalized.endswith(suffix) and len(normalized) > len(suffix):
+                normalized = normalized[: -len(suffix)]
+                break
+        return normalized
+
+    def _geo_distance_km(
+        self,
+        lat1: float,
+        lon1: float,
+        lat2: float,
+        lon2: float,
+    ) -> float:
+        lat_scale = 111.0
+        lon_scale = 111.0 * max(0.1, math.cos(math.radians((lat1 + lat2) / 2)))
+        lat_distance = (lat1 - lat2) * lat_scale
+        lon_distance = (lon1 - lon2) * lon_scale
+        return math.sqrt(lat_distance * lat_distance + lon_distance * lon_distance)
+
+    def _location_name_match_score(
+        self,
+        query: str,
+        poi: POIRecommendation,
+    ) -> tuple[int, int, float]:
+        normalized_query = self._normalize_location_token(query)
+        normalized_name = self._normalize_location_token(poi.name)
+        exact_penalty = 0 if normalized_query == normalized_name else 1
+        contains_penalty = 0 if normalized_query in normalized_name or normalized_name in normalized_query else 1
+        return (
+            exact_penalty,
+            contains_penalty,
+            self._distance_score(poi, self._city_center(self._normalize_city_name(poi.district) or "")),
+        )
 
     def _normalize_tags(self, item: dict[str, Any]) -> list[str]:
         tags = item.get("tags", item.get("tag", item.get("type", item.get("typecode", []))))

@@ -40,7 +40,7 @@ function formatCny(value: number, suffix = "") {
     <div class="flex flex-wrap items-start justify-between gap-4">
       <div>
         <div class="text-lg font-semibold text-ink">
-          第{{ day.day_number }}天 · {{ day.theme }}
+          第 {{ day.day_number }} 天 · {{ day.theme }}
         </div>
         <div class="mt-2 text-sm text-slate-500">
           {{ day.date }}
@@ -108,9 +108,6 @@ function formatCny(value: number, suffix = "") {
               <div class="mt-2 text-xs text-slate-500">
                 区域：{{ day.stay.area || day.hotel_area || "待定" }}
               </div>
-              <div class="mt-2 text-xs leading-6 text-slate-500">
-                {{ day.stay.reason || "优先靠近当日主要行程点，减少往返时间。" }}
-              </div>
               <div class="mt-3 text-xs text-[#2f5a81]">
                 当日酒店费用：{{ formatCny(day.stay.room_nightly_cost_cny, "/间夜") || "待确认" }}
               </div>
@@ -143,22 +140,6 @@ function formatCny(value: number, suffix = "") {
             <div v-else class="mt-3 text-slate-500">暂无路线信息</div>
           </div>
 
-          <!-- <div class="rounded-[22px] border border-[#e3ebf2] bg-[#f8fbfd] px-4 py-4 text-sm text-slate-600 shadow-sm">
-            <div class="font-medium text-ink">天气与体感</div>
-            <div v-if="weather" class="mt-3">
-              <div>
-                {{ weather.day_weather }} / {{ weather.night_weather }}
-              </div>
-              <div class="mt-2 text-xs text-slate-500">
-                {{ weather.low_temperature }}° - {{ weather.high_temperature }}°
-              </div>
-              <div class="mt-3 leading-6">
-                {{ weather.advice }}
-              </div>
-            </div>
-            <div v-else class="mt-3 text-slate-500">暂无天气信息</div>
-          </div> -->
-
           <div class="rounded-[22px] border border-[#e3ebf2] bg-[#f8fbfd] px-4 py-4 text-sm text-slate-600 shadow-sm">
             <div class="font-medium text-ink">餐饮推荐</div>
             <div v-if="mealRecommendations.length" class="mt-3 space-y-2">
@@ -169,9 +150,6 @@ function formatCny(value: number, suffix = "") {
               >
                 <div class="font-medium text-ink">
                   {{ mealLabel(meal.meal_type) }} · {{ meal.venue_name }}
-                </div>
-                <div class="mt-2 text-xs leading-6 text-slate-500">
-                  {{ [meal.cuisine, meal.suggestion].filter(Boolean).join(" · ") }}
                 </div>
                 <div class="mt-2 text-xs text-[#2f5a81]">
                   {{ meal.estimated_cost || formatCny(meal.estimated_cost_cny, "/人") || "费用待确认" }}

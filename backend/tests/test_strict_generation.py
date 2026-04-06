@@ -16,6 +16,7 @@ from app.schemas.planning import (
     POIRecommendation,
     PlanningContext,
     RouteSummary,
+    StayRecommendation,
     TravelPlan,
     TripPlanningRequest,
     WeatherSummary,
@@ -222,3 +223,180 @@ def test_normalize_plan_days_enforces_three_meals_and_recomputes_daily_food_cost
         + day.cost_breakdown.tickets_per_person_cny
         + day.cost_breakdown.extras_per_person_cny
     )
+
+
+def test_finalize_plan_with_routes_syncs_route_summaries_and_activity_transport() -> None:
+    settings = Settings()
+    client = TravelAIClient(settings)
+    request = _build_request(days=1, adults=2)
+    source = _build_plan(days=1)
+    source.days[0].activities = [
+        Activity(
+            start_time="09:00",
+            end_time="10:00",
+            title="West Lake",
+            category="sightseeing",
+            description="desc",
+            location_name="West Lake",
+        ),
+        Activity(
+            start_time="10:30",
+            end_time="12:00",
+            title="Lingyin",
+            category="sightseeing",
+            description="desc",
+            location_name="Lingyin Temple",
+        ),
+    ]
+    context = PlanningContext(
+        destination="\u676d\u5dde",
+        routes=[
+            RouteSummary(
+                day_number=1,
+                title="Route 1",
+                from_name="Hotel 1",
+                to_name="West Lake",
+                mode="walking",
+                duration_text="15分钟",
+                distance_text="1.2公里",
+                estimated_transport_cost_cny=0,
+            ),
+            RouteSummary(
+                day_number=1,
+                title="Route 2",
+                from_name="West Lake",
+                to_name="Lingyin Temple",
+                mode="transit",
+                duration_text="25分钟",
+                distance_text="6.0公里",
+                estimated_transport_cost_cny=8,
+            ),
+        ],
+        weather=WeatherSummary(),
+    )
+
+    finalized = client.finalize_plan_with_routes(request, source, context)
+    day = finalized.days[0]
+
+    assert [(route.from_name, route.to_name) for route in day.route_summaries] == [
+        ("Hotel 1", "West Lake"),
+        ("West Lake", "Lingyin Temple"),
+    ]
+    assert day.activities[0].transport_from_previous == "从 Hotel 1 前往 West Lake，建议步行，15分钟，1.2公里"
+    assert day.activities[1].transport_from_previous == "从 West Lake 前往 Lingyin Temple，建议公共交通，25分钟，6.0公里"
+    assert day.transport_tips[-1] == "从 West Lake 前往 Lingyin Temple，建议公共交通，25分钟，6.0公里"
+
+
+def test_normalize_plan_days_replaces_far_hotel_with_activity_area_hotel() -> None:
+    settings = Settings()
+    client = TravelAIClient(settings)
+    request = _build_request(days=1, adults=2)
+    source = _build_plan(days=1)
+    source.days[0].hotel_area = "西街片区"
+    source.days[0].stay = DayStayInfo(
+        area="崇武片区",
+        hotel_name="崇武海景湾度假酒店",
+        reason="海景资源丰富",
+        room_nightly_cost_cny=520,
+    )
+    source.days[0].activities = [
+        Activity(
+            start_time="09:00",
+            end_time="10:30",
+            title="开元寺",
+            category="sightseeing",
+            description="desc",
+            location_name="开元寺",
+        ),
+        Activity(
+            start_time="11:00",
+            end_time="13:00",
+            title="西街",
+            category="explore",
+            description="desc",
+            location_name="西街",
+        ),
+    ]
+    context = PlanningContext(
+        destination="泉州",
+        hotels=[
+            POIRecommendation(name="泉州西街行舍(开元寺店)", address="鲤中街道通政社区会通巷57-2号"),
+            POIRecommendation(name="锦江之星(泉州西街开元寺店)", address="新华北路373-391号"),
+        ],
+        weather=WeatherSummary(),
+    )
+
+    normalized = client._normalize_plan_days(request, source, context)
+    day = normalized.days[0]
+
+    assert day.hotel_area == "西街片区"
+    assert day.stay.hotel_name == "泉州西街行舍(开元寺店)"
+    assert day.stay.area == "西街片区"
+    assert "开元寺" in day.stay.reason
+
+
+def test_normalize_plan_days_rebuilds_stay_recommendations_from_daily_stays() -> None:
+    settings = Settings()
+    client = TravelAIClient(settings)
+    request = _build_request(days=2, adults=2)
+    source = _build_plan(days=2)
+    source.stay_recommendations = [
+        StayRecommendation(
+            area="崇武片区",
+            hotel_name="崇武海景湾度假酒店",
+            reason="海景资源丰富",
+            nightly_budget="¥680/晚",
+        )
+    ]
+    source.days[0].hotel_area = "西街片区"
+    source.days[0].stay = DayStayInfo(
+        area="西街片区",
+        hotel_name="泉州西街行舍(开元寺店)",
+        reason="步行可达开元寺和西街",
+        room_nightly_cost_cny=500,
+    )
+    source.days[1].hotel_area = "钟楼区域"
+    source.days[1].stay = DayStayInfo(
+        area="钟楼区域",
+        hotel_name="汉庭酒店(泉州古城西街店)",
+        reason="靠近第二天活动区域",
+        room_nightly_cost_cny=400,
+    )
+    context = PlanningContext(destination="泉州", weather=WeatherSummary())
+
+    normalized = client._normalize_plan_days(request, source, context)
+
+    assert [(item.hotel_name, item.area) for item in normalized.stay_recommendations] == [
+        ("泉州西街行舍(开元寺店)", "西街片区"),
+        ("汉庭酒店(泉州古城西街店)", "钟楼区域"),
+    ]
+    assert normalized.stay_recommendations[0].nightly_budget == "¥500/晚"
+
+
+def test_normalize_plan_days_adds_supplemental_activity_when_day_ends_too_early() -> None:
+    settings = Settings()
+    client = TravelAIClient(settings)
+    request = _build_request(days=1, adults=2)
+    source = _build_plan(days=1)
+    source.days[0].hotel_area = "清源山片区"
+    source.days[0].activities = [
+        Activity(
+            start_time="09:00",
+            end_time="12:00",
+            title="清源山登山",
+            category="sightseeing",
+            description="desc",
+            location_name="清源山君岩景区",
+        )
+    ]
+    context = PlanningContext(
+        destination="泉州",
+        attractions=[POIRecommendation(name="清源山老君岩", address="清源山片区")],
+        weather=WeatherSummary(),
+    )
+
+    normalized = client._normalize_plan_days(request, source, context)
+    day = normalized.days[0]
+
+    assert len(day.activities) >= 2
+    assert day.activities[-1].start_time >= "14:00"

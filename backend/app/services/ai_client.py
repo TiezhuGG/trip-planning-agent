@@ -433,6 +433,8 @@ class TravelAIClient:
                         "Return JSON only and keep user-facing text natural Chinese. "
                         "days must contain exactly request.days records with unique day_number from 1..request.days. "
                         "Each day must include at least one activity and meals that cover breakfast, lunch, and dinner. "
+                        "Each day's stay and hotel_area must stay close to that day's main activity cluster. "
+                        "Do not place lodging in a far-away district within the same city. "
                         "Keep descriptions concise and avoid verbose wording."
                     ),
                     user_payload={**user_payload, "response_schema_hint": schema_hint},
@@ -483,7 +485,17 @@ class TravelAIClient:
         normalized_payload = self._normalize_compose_payload(payload, request, context)
         plan = TravelPlan.model_validate(normalized_payload)
         plan = self._normalize_plan_days(request, plan, context)
-        self._ensure_final_plan_integrity(request, plan)
+        self._ensure_final_plan_integrity(request, plan, require_routes=bool(context.routes))
+        return self._apply_deterministic_budget(request, plan)
+
+    def finalize_plan_with_routes(
+        self,
+        request: TripPlanningRequest,
+        plan: TravelPlan,
+        context: PlanningContext,
+    ) -> TravelPlan:
+        plan = self._normalize_plan_days(request, plan, context)
+        self._ensure_final_plan_integrity(request, plan, require_routes=True)
         return self._apply_deterministic_budget(request, plan)
 
     def _normalize_compose_payload(
@@ -911,6 +923,7 @@ class TravelAIClient:
         self,
         request: TripPlanningRequest,
         plan: TravelPlan,
+        require_routes: bool = True,
     ) -> None:
         if len(plan.days) != request.days:
             raise ValueError(f"最终行程天数不匹配: 期望 {request.days} 天，实际 {len(plan.days)} 天。")
@@ -928,7 +941,7 @@ class TravelAIClient:
                 raise ValueError(f"第 {day.day_number} 天缺少 activities。")
             if not day.meals:
                 raise ValueError(f"第 {day.day_number} 天缺少 meals。")
-            if not day.route_summaries:
+            if require_routes and not day.route_summaries:
                 raise ValueError(f"第 {day.day_number} 天缺少 route_summaries。")
             for route in day.route_summaries:
                 if route.day_number not in (None, day.day_number):
@@ -996,16 +1009,6 @@ class TravelAIClient:
                     }
                 )
 
-            room_nightly_cost_cny = stay.room_nightly_cost_cny
-            if room_nightly_cost_cny <= 0 and stays:
-                room_nightly_cost_cny = self._extract_cny_amount(stays[day_index % len(stays)].nightly_budget)
-            stay = stay.model_copy(
-                update={
-                    "area": stay.area or day.hotel_area,
-                    "room_nightly_cost_cny": max(0, room_nightly_cost_cny),
-                }
-            )
-
             normalized_activities: list[Activity] = []
             for activity in day.activities:
                 ticket_cost_cny = activity.ticket_cost_cny or self._extract_cny_amount(activity.expected_cost)
@@ -1018,6 +1021,26 @@ class TravelAIClient:
                         }
                     )
                 )
+            normalized_activities = self._ensure_day_activity_coverage(
+                day=day,
+                activities=normalized_activities,
+                context=context,
+            )
+
+            room_nightly_cost_cny = stay.room_nightly_cost_cny
+            if room_nightly_cost_cny <= 0 and stays:
+                room_nightly_cost_cny = self._extract_cny_amount(stays[day_index % len(stays)].nightly_budget)
+            stay, resolved_hotel_area = self._reconcile_day_stay(
+                day=day.model_copy(update={"activities": normalized_activities}),
+                stay=stay,
+                hotels=context.hotels,
+            )
+            stay = stay.model_copy(
+                update={
+                    "area": stay.area or resolved_hotel_area,
+                    "room_nightly_cost_cny": max(0, room_nightly_cost_cny),
+                }
+            )
 
             normalized_meals: list[MealRecommendation] = []
             for meal in day.meals:
@@ -1050,6 +1073,11 @@ class TravelAIClient:
                         }
                     )
                 )
+            normalized_activities = self._sync_activity_transport_from_routes(
+                normalized_activities,
+                normalized_routes,
+            )
+            transport_tips = self._merge_transport_tips(day.transport_tips, normalized_routes)
 
             tickets_per_person = sum(item.ticket_cost_cny for item in normalized_activities)
             food_per_person = sum(item.estimated_cost_cny for item in normalized_meals)
@@ -1077,9 +1105,11 @@ class TravelAIClient:
             normalized_days.append(
                 day.model_copy(
                     update={
+                        "hotel_area": resolved_hotel_area,
                         "stay": stay,
                         "activities": normalized_activities,
                         "meals": normalized_meals,
+                        "transport_tips": transport_tips,
                         "route_summaries": normalized_routes,
                         "route_summary": normalized_routes[0] if normalized_routes else None,
                         "cost_breakdown": cost_breakdown,
@@ -1087,7 +1117,17 @@ class TravelAIClient:
                 )
             )
 
-        return plan.model_copy(update={"days": normalized_days})
+        normalized_stays = self._normalize_stay_recommendations(
+            existing_recommendations=plan.stay_recommendations,
+            normalized_days=normalized_days,
+            hotels=context.hotels,
+        )
+        return plan.model_copy(
+            update={
+                "days": normalized_days,
+                "stay_recommendations": normalized_stays,
+            }
+        )
 
     def _ensure_daily_core_meals(
         self,
@@ -1130,6 +1170,453 @@ class TravelAIClient:
         ]
         extras = [meal for meal in meals if meal.meal_type not in {"breakfast", "lunch", "dinner"}]
         return ordered + extras
+
+    def _ensure_day_activity_coverage(
+        self,
+        day: DayPlan,
+        activities: list[Activity],
+        context: PlanningContext,
+    ) -> list[Activity]:
+        if not activities:
+            return activities
+        if len(activities) >= 2 and max(activity.end_time for activity in activities if activity.end_time) >= "15:00":
+            return activities
+
+        supplemented = list(activities)
+        used_locations = {self._normalize_location_text(item.location_name) for item in supplemented if item.location_name}
+        supplemental = self._pick_supplemental_activity(day, context, used_locations)
+        if supplemental is not None:
+            supplemented.append(supplemental)
+        return supplemented
+
+    def _pick_supplemental_activity(
+        self,
+        day: DayPlan,
+        context: PlanningContext,
+        used_locations: set[str],
+    ) -> Activity | None:
+        for poi in context.attractions:
+            normalized_name = self._normalize_location_text(getattr(poi, "name", ""))
+            if not normalized_name or normalized_name in used_locations:
+                continue
+            if day.hotel_area and self._text_overlap_score(normalized_name, day.hotel_area, hit_score=1, partial_score=1) <= 0:
+                continue
+            start_time = self._next_activity_start_time(day.activities)
+            return Activity(
+                start_time=start_time,
+                end_time="17:30",
+                title=f"{poi.name} 周边延展游览",
+                category="explore",
+                description=f"补充下午时段，在 {poi.name} 周边继续安排街区漫游或轻量参观。",
+                location_name=poi.name,
+                transport_from_previous="从上一站短途前往周边片区继续游览。",
+                expected_cost="¥0-60/人",
+                ticket_cost_cny=0,
+                booking_tip="按现场人流与体力情况灵活调整停留时长。",
+            )
+
+        area_name = day.hotel_area or day.stay.area or (day.activities[-1].location_name if day.activities else day.theme)
+        if not area_name:
+            return None
+        start_time = self._next_activity_start_time(day.activities)
+        return Activity(
+            start_time=start_time,
+            end_time="17:30",
+            title=f"{area_name} 周边漫游",
+            category="explore",
+            description="补充下午时段，在当日主要活动片区安排街区散步、茶歇或自由探索。",
+            location_name=area_name,
+            transport_from_previous="从上一站短途前往周边片区继续游览。",
+            expected_cost="¥0-50/人",
+            ticket_cost_cny=0,
+            booking_tip="优先选择与主行程顺路的街区或开放区域。",
+        )
+
+    def _next_activity_start_time(self, activities: list[Activity]) -> str:
+        if not activities:
+            return "14:00"
+        latest_end = max((activity.end_time for activity in activities if activity.end_time), default="12:00")
+        if latest_end < "13:30":
+            return "14:00"
+        if latest_end < "15:00":
+            return "15:00"
+        return latest_end
+
+    def _reconcile_day_stay(
+        self,
+        day: DayPlan,
+        stay: DayStayInfo,
+        hotels: list[Any],
+    ) -> tuple[DayStayInfo, str]:
+        resolved_hotel_area = day.hotel_area or stay.area
+        if not hotels:
+            return stay, resolved_hotel_area
+
+        best_hotel = max(
+            hotels,
+            key=lambda hotel: self._score_hotel_for_day(hotel, day, stay),
+        )
+        best_score = self._score_hotel_for_day(best_hotel, day, stay)
+
+        current_hotel = self._match_hotel_candidate(stay.hotel_name, hotels)
+        current_score = self._score_hotel_for_day(
+            current_hotel or self._stay_stub_poi(stay, day.hotel_area),
+            day,
+            stay,
+        )
+
+        should_replace = False
+        if not stay.hotel_name:
+            should_replace = best_score > 0
+        elif current_hotel is None:
+            should_replace = best_score >= current_score + 2
+        elif best_hotel.name != current_hotel.name:
+            should_replace = best_score >= current_score + 4
+
+        if should_replace:
+            resolved_hotel_area = self._preferred_area_for_day(
+                day=day,
+                stay=stay,
+                fallback_area=(
+                getattr(best_hotel, "district", "")
+                or getattr(best_hotel, "address", "")
+                or day.hotel_area
+                or stay.area
+                ),
+            )
+            return (
+                stay.model_copy(
+                    update={
+                        "area": resolved_hotel_area,
+                        "hotel_name": getattr(best_hotel, "name", stay.hotel_name),
+                        "reason": self._hotel_reason_for_day(best_hotel, day),
+                    }
+                ),
+                resolved_hotel_area,
+            )
+
+        if current_hotel is not None:
+            resolved_hotel_area = self._preferred_area_for_day(
+                day=day,
+                stay=stay,
+                fallback_area=(
+                stay.area
+                or getattr(current_hotel, "district", "")
+                or getattr(current_hotel, "address", "")
+                or day.hotel_area
+                ),
+            )
+            return (
+                stay.model_copy(
+                    update={
+                        "area": resolved_hotel_area,
+                        "hotel_name": getattr(current_hotel, "name", stay.hotel_name),
+                    }
+                ),
+                resolved_hotel_area,
+            )
+
+        return stay, resolved_hotel_area
+
+    def _preferred_area_for_day(
+        self,
+        day: DayPlan,
+        stay: DayStayInfo,
+        fallback_area: str,
+    ) -> str:
+        for candidate in [day.hotel_area, stay.area]:
+            if self._area_matches_day(candidate, day):
+                return candidate
+        return fallback_area or day.hotel_area or stay.area
+
+    def _area_matches_day(
+        self,
+        area: str,
+        day: DayPlan,
+    ) -> bool:
+        normalized_area = self._normalize_location_text(area)
+        if not normalized_area:
+            return False
+        for activity in day.activities:
+            normalized_location = self._normalize_location_text(activity.location_name)
+            if not normalized_location:
+                continue
+            if normalized_area in normalized_location or normalized_location in normalized_area:
+                return True
+            if any(fragment in normalized_location for fragment in self._location_fragments(normalized_area)):
+                return True
+        return False
+
+    def _match_hotel_candidate(
+        self,
+        hotel_name: str,
+        hotels: list[Any],
+    ) -> Any | None:
+        normalized_target = self._normalize_location_text(hotel_name)
+        if not normalized_target:
+            return None
+
+        scored: list[tuple[int, int, Any]] = []
+        for hotel in hotels:
+            candidate_name = self._normalize_location_text(getattr(hotel, "name", ""))
+            if not candidate_name:
+                continue
+            exact_penalty = 0 if candidate_name == normalized_target else 1
+            contains_penalty = 0 if normalized_target in candidate_name or candidate_name in normalized_target else 1
+            if exact_penalty and contains_penalty:
+                continue
+            scored.append((exact_penalty, contains_penalty, hotel))
+
+        if not scored:
+            return None
+        scored.sort(key=lambda item: item[:2])
+        return scored[0][2]
+
+    def _score_hotel_for_day(
+        self,
+        hotel: Any,
+        day: DayPlan,
+        stay: DayStayInfo,
+    ) -> int:
+        hotel_text = self._normalize_location_text(
+            " ".join(
+                [
+                    str(getattr(hotel, "name", "")),
+                    str(getattr(hotel, "address", "")),
+                    str(getattr(hotel, "district", "")),
+                ]
+            )
+        )
+        if not hotel_text:
+            return 0
+
+        score = 0
+        if any(word in hotel_text for word in ("酒店", "宾馆", "旅馆", "民宿", "客栈")):
+            score += 1
+
+        area_references = [day.hotel_area, stay.area]
+        for phrase in area_references:
+            score += self._text_overlap_score(hotel_text, phrase, hit_score=8, partial_score=3)
+
+        for activity in day.activities:
+            score += self._text_overlap_score(hotel_text, activity.location_name, hit_score=6, partial_score=2)
+
+        return score
+
+    def _text_overlap_score(
+        self,
+        hotel_text: str,
+        phrase: str,
+        hit_score: int,
+        partial_score: int,
+    ) -> int:
+        normalized_phrase = self._normalize_location_text(phrase)
+        if not normalized_phrase:
+            return 0
+        if normalized_phrase in hotel_text:
+            return hit_score
+
+        partial_hits = 0
+        for fragment in self._location_fragments(normalized_phrase):
+            if fragment and fragment in hotel_text:
+                partial_hits += 1
+        if partial_hits:
+            return partial_score * partial_hits
+        return 0
+
+    def _location_fragments(self, value: str) -> list[str]:
+        fragments: list[str] = []
+        for size in range(min(4, len(value)), 1, -1):
+            for index in range(0, len(value) - size + 1):
+                fragments.append(value[index : index + size])
+        unique: list[str] = []
+        seen: set[str] = set()
+        for fragment in fragments:
+            if fragment in seen:
+                continue
+            seen.add(fragment)
+            unique.append(fragment)
+        return unique[:8]
+
+    def _normalize_location_text(self, value: str | None) -> str:
+        if not value:
+            return ""
+        normalized = re.sub(r"\s+", "", str(value).strip())
+        normalized = normalized.lower()
+        for suffix in (
+            "历史文化街区",
+            "风景名胜区",
+            "旅游度假区",
+            "度假区",
+            "风景区",
+            "景区",
+            "片区",
+            "区域",
+            "商圈",
+            "古城",
+            "街道",
+            "酒店",
+            "宾馆",
+            "旅馆",
+            "民宿",
+            "客栈",
+            "店",
+            "寺",
+        ):
+            if normalized.endswith(suffix) and len(normalized) > len(suffix):
+                normalized = normalized[: -len(suffix)]
+                break
+        return normalized
+
+    def _stay_stub_poi(
+        self,
+        stay: DayStayInfo,
+        hotel_area: str,
+    ) -> Any:
+        class _StayStub:
+            def __init__(self, name: str, address: str) -> None:
+                self.name = name
+                self.address = address
+                self.district = ""
+
+        return _StayStub(stay.hotel_name, stay.area or hotel_area)
+
+    def _hotel_reason_for_day(
+        self,
+        hotel: Any,
+        day: DayPlan,
+    ) -> str:
+        focus = day.activities[0].location_name if day.activities else day.theme
+        return f"更贴近{focus}等当日活动区域，往返更省时。"
+
+    def _sync_activity_transport_from_routes(
+        self,
+        activities: list[Activity],
+        routes: list[RouteSummary],
+    ) -> list[Activity]:
+        if not activities:
+            return activities
+
+        normalized: list[Activity] = []
+        for index, activity in enumerate(activities):
+            transport_tip = activity.transport_from_previous
+            if index < len(routes):
+                transport_tip = self._route_to_transport_tip(routes[index])
+            normalized.append(
+                activity.model_copy(
+                    update={
+                        "transport_from_previous": transport_tip,
+                    }
+                )
+            )
+        return normalized
+
+    def _merge_transport_tips(
+        self,
+        existing_tips: list[str],
+        routes: list[RouteSummary],
+    ) -> list[str]:
+        merged: list[str] = []
+        seen: set[str] = set()
+        route_tips = [self._route_to_transport_tip(route) for route in routes]
+        for tip in [*existing_tips, *route_tips]:
+            normalized_tip = tip.strip()
+            if not normalized_tip or normalized_tip in seen:
+                continue
+            seen.add(normalized_tip)
+            merged.append(normalized_tip)
+        return merged
+
+    def _route_to_transport_tip(self, route: RouteSummary) -> str:
+        mode_label = {
+            "walking": "步行",
+            "transit": "公共交通",
+            "bicycling": "骑行",
+            "driving": "驾车",
+        }.get(route.mode, route.mode)
+        parts = [f"从 {route.from_name} 前往 {route.to_name}"]
+        if mode_label:
+            parts.append(f"建议{mode_label}")
+        if route.duration_text:
+            parts.append(route.duration_text)
+        if route.distance_text:
+            parts.append(route.distance_text)
+        return "，".join(parts)
+
+    def _normalize_stay_recommendations(
+        self,
+        existing_recommendations: list[StayRecommendation],
+        normalized_days: list[DayPlan],
+        hotels: list[Any],
+    ) -> list[StayRecommendation]:
+        existing_by_name: dict[str, StayRecommendation] = {}
+        for recommendation in existing_recommendations:
+            key = self._normalize_location_text(recommendation.hotel_name)
+            if key and key not in existing_by_name:
+                existing_by_name[key] = recommendation
+
+        recommendations: list[StayRecommendation] = []
+        seen: set[str] = set()
+        for day in normalized_days:
+            hotel_name = day.stay.hotel_name.strip()
+            area = (day.stay.area or day.hotel_area).strip()
+            if not hotel_name and not area:
+                continue
+
+            key = self._normalize_location_text(hotel_name or area)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            existing = existing_by_name.get(self._normalize_location_text(hotel_name))
+            candidate_hotel = self._match_hotel_candidate(hotel_name, hotels)
+            recommendation_area = (
+                area
+                or getattr(candidate_hotel, "district", "")
+                or getattr(candidate_hotel, "address", "")
+                or (existing.area if existing is not None else "")
+            )
+            recommendation_reason = (
+                day.stay.reason
+                or (existing.reason if existing is not None else "")
+                or f"更贴近第 {day.day_number} 天活动区域，通勤更省时。"
+            )
+            nightly_budget = self._format_nightly_budget(day.stay.room_nightly_cost_cny)
+            if not nightly_budget and existing is not None:
+                nightly_budget = existing.nightly_budget
+
+            recommendations.append(
+                StayRecommendation(
+                    area=recommendation_area,
+                    hotel_name=hotel_name or (existing.hotel_name if existing is not None else ""),
+                    reason=recommendation_reason,
+                    nightly_budget=nightly_budget,
+                )
+            )
+
+        if recommendations:
+            return recommendations
+
+        if existing_recommendations:
+            return existing_recommendations
+
+        fallback: list[StayRecommendation] = []
+        for hotel in hotels[:2]:
+            area = getattr(hotel, "district", "") or getattr(hotel, "address", "")
+            fallback.append(
+                StayRecommendation(
+                    area=area,
+                    hotel_name=getattr(hotel, "name", ""),
+                    reason="靠近主要活动区域，适合作为住宿备选。",
+                    nightly_budget="",
+                )
+            )
+        return fallback
+
+    def _format_nightly_budget(self, room_nightly_cost_cny: int) -> str:
+        if room_nightly_cost_cny <= 0:
+            return ""
+        return f"¥{room_nightly_cost_cny:,}/晚"
 
     def _apply_deterministic_budget(
         self,
@@ -1375,7 +1862,7 @@ class TravelAIClient:
     ) -> TravelPlan:
         plan = self._fallback_plan(request, initial_plan, context)
         plan = self._normalize_plan_days(request, plan, context)
-        self._ensure_final_plan_integrity(request, plan)
+        self._ensure_final_plan_integrity(request, plan, require_routes=bool(context.routes))
         return self._apply_deterministic_budget(request, plan)
 
     def _fallback_route_summary(

@@ -35,7 +35,7 @@ class PlanningCoordinatorAgent:
         self.sight_agent = SightseeingAgent(self.adapter)
         self.weather_agent = WeatherAgent(self.adapter)
         self.hotel_agent = HotelRecommendationAgent(self.adapter)
-        self.meal_agent = MealRecommendationAgent()
+        self.meal_agent = MealRecommendationAgent(self.adapter)
         self.route_agent = RoutePlanningAgent(self.adapter)
         self.composer_agent = ItineraryComposerAgent(self.ai_client)
 
@@ -163,18 +163,6 @@ class PlanningCoordinatorAgent:
                 )
             )
 
-            routes, route_trace = await self.route_agent.gather(
-                request=request,
-                initial_plan=initial_plan,
-                attractions=context.attractions,
-                hotels=context.hotels,
-                day_restaurants=day_restaurants,
-                trace=tool_trace,
-            )
-            context.routes = routes
-            agent_trace.append(route_trace)
-            warnings.extend(route_trace.warnings)
-
             plan, compose_trace, compose_llm_used, compose_fallback_used, compose_warnings = await self.composer_agent.gather(
                 request=request,
                 initial_plan=initial_plan,
@@ -183,6 +171,43 @@ class PlanningCoordinatorAgent:
             )
             agent_trace.append(compose_trace)
             warnings.extend(compose_warnings)
+
+            plan, rebound_hotels, hotel_binding_trace = await self.hotel_agent.bind_daily_stays(
+                request=request,
+                plan=plan,
+                context=context,
+                trace=tool_trace,
+            )
+            if rebound_hotels:
+                context.hotels = rebound_hotels[:8]
+            agent_trace.append(hotel_binding_trace)
+            warnings.extend(hotel_binding_trace.warnings)
+
+            plan, rebound_restaurants, meal_binding_trace = await self.meal_agent.bind_daily_meals(
+                request=request,
+                plan=plan,
+                context=context,
+                trace=tool_trace,
+            )
+            if rebound_restaurants:
+                context.restaurants = rebound_restaurants[:12]
+            agent_trace.append(meal_binding_trace)
+            warnings.extend(meal_binding_trace.warnings)
+
+            routes, route_trace = await self.route_agent.gather_for_plan(
+                request=request,
+                plan=plan,
+                context=context,
+                trace=tool_trace,
+            )
+            context.routes = routes
+            plan = self.ai_client.finalize_plan_with_routes(
+                request=request,
+                plan=plan,
+                context=context,
+            )
+            agent_trace.append(route_trace)
+            warnings.extend(route_trace.warnings)
 
             llm_used = seed_llm_used or compose_llm_used
             fallback_used = seed_fallback_used or compose_fallback_used

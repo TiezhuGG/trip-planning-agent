@@ -1,14 +1,21 @@
 import asyncio
 from datetime import date
 
+from app.agents.hotel_agent import HotelRecommendationAgent
 from app.agents.poi_agent import SightseeingAgent
 from app.agents.route_agent import RoutePlanningAgent
 from app.schemas.planning import (
+    Activity,
+    BudgetBreakdown,
+    DayPlan,
     InitialPlanDay,
     InitialPlanDraft,
+    MealRecommendation,
     POIRecommendation,
+    PlanningContext,
     RouteSummary,
     ToolCallRecord,
+    TravelPlan,
     TripPlanningRequest,
 )
 
@@ -135,3 +142,136 @@ def test_route_agent_keeps_segment_order_when_planning_in_parallel() -> None:
     ]
     assert execution.success is True
     assert len(routes) == 4
+
+
+def test_hotel_agent_rebinds_daily_stay_around_day_activities() -> None:
+    class FakeAdapter:
+        async def fetch_hotels_for_locations(
+            self,
+            request: TripPlanningRequest,
+            trace: list[ToolCallRecord],
+            location_names: list[str],
+            area_hint: str = "",
+        ):
+            _ = (request, trace, location_names, area_hint)
+            return [
+                POIRecommendation(name="清源山脚精品酒店", address="清源山景区入口"),
+                POIRecommendation(name="西街行舍", address="西街"),
+            ]
+
+    agent = HotelRecommendationAgent(FakeAdapter())  # type: ignore[arg-type]
+    request = _request(days=1)
+    plan = TravelPlan(
+        title="Plan",
+        summary="Summary",
+        weather_summary="",
+        best_booking_tip="Tip",
+        estimated_budget=BudgetBreakdown(),
+        stay_recommendations=[],
+        city_tips=[],
+        packing_list=[],
+        days=[
+            DayPlan(
+                day_number=1,
+                date="2026-03-20",
+                theme="Day 1",
+                overview="Overview",
+                hotel_area="崇武镇",
+                stay={"area": "崇武镇", "hotel_name": "崇武海景湾度假酒店", "reason": "旧推荐"},
+                meals=[],
+                activities=[
+                    Activity(
+                        start_time="09:00",
+                        end_time="12:00",
+                        title="清源山",
+                        category="sightseeing",
+                        description="desc",
+                        location_name="清源山君岩景区",
+                    )
+                ],
+                route_summaries=[],
+            )
+        ],
+    )
+    context = PlanningContext(destination="泉州", hotels=[])
+
+    rebound_plan, rebound_hotels, execution = asyncio.run(agent.bind_daily_stays(request, plan, context, []))
+
+    assert rebound_plan.days[0].stay.hotel_name == "清源山脚精品酒店"
+    assert rebound_plan.days[0].hotel_area == "清源山景区入口"
+    assert rebound_hotels[0].name == "清源山脚精品酒店"
+    assert execution.success is True
+
+
+def test_meal_agent_rebinds_daily_meals_around_day_activities() -> None:
+    class FakeAdapter:
+        async def fetch_restaurants_for_locations(
+            self,
+            request: TripPlanningRequest,
+            trace: list[ToolCallRecord],
+            location_names: list[str],
+            area_hint: str = "",
+            stay_hint: str = "",
+        ):
+            _ = (request, trace, location_names, area_hint, stay_hint)
+            return [
+                POIRecommendation(name="清源山早餐铺", tags=["早餐"]),
+                POIRecommendation(name="清源山景区餐厅", tags=["餐厅"]),
+                POIRecommendation(name="西街海鲜馆", tags=["海鲜", "餐厅"]),
+            ]
+
+    from app.agents.meal_agent import MealRecommendationAgent
+
+    agent = MealRecommendationAgent(FakeAdapter())  # type: ignore[arg-type]
+    request = _request(days=1)
+    plan = TravelPlan(
+        title="Plan",
+        summary="Summary",
+        weather_summary="",
+        best_booking_tip="Tip",
+        estimated_budget=BudgetBreakdown(),
+        stay_recommendations=[],
+        city_tips=[],
+        packing_list=[],
+        days=[
+            DayPlan(
+                day_number=1,
+                date="2026-03-20",
+                theme="Day 1",
+                overview="Overview",
+                hotel_area="崇武镇",
+                stay={"area": "清源山片区", "hotel_name": "清源山脚精品酒店", "reason": "nearby"},
+                meals=[MealRecommendation(meal_type="lunch", venue_name="崇武镇餐厅")],
+                activities=[
+                    Activity(
+                        start_time="09:00",
+                        end_time="12:00",
+                        title="清源山",
+                        category="sightseeing",
+                        description="desc",
+                        location_name="清源山君岩景区",
+                    ),
+                    Activity(
+                        start_time="14:00",
+                        end_time="16:00",
+                        title="凉亭观景",
+                        category="explore",
+                        description="desc",
+                        location_name="清源山凉亭观景台",
+                    ),
+                ],
+                route_summaries=[],
+            )
+        ],
+    )
+    context = PlanningContext(destination="泉州", restaurants=[])
+
+    rebound_plan, rebound_restaurants, execution = asyncio.run(agent.bind_daily_meals(request, plan, context, []))
+
+    assert [meal.venue_name for meal in rebound_plan.days[0].meals[:3]] == [
+        "清源山早餐铺",
+        "清源山景区餐厅",
+        "西街海鲜馆",
+    ]
+    assert rebound_restaurants[0].name == "清源山早餐铺"
+    assert execution.success is True
