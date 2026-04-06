@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from app.schemas.planning import (
     AgentExecution,
     POIRecommendation,
@@ -48,7 +50,9 @@ class HotelRecommendationAgent:
                     area_hint=area_hint,
                 )
             except Exception as exc:
-                warnings.append(f"第 {day.day_number} 天酒店绑定失败，已保留原住宿。原因: {exc}")
+                warnings.append(
+                    f"第 {day.day_number} 天酒店绑定失败，已保留原住宿。原因: {exc}"
+                )
                 updated_days.append(day)
                 continue
 
@@ -59,8 +63,10 @@ class HotelRecommendationAgent:
             selected = day_hotels[0]
             selected_hotels.append(selected)
             rebound_days += 1
+
             resolved_area = selected.district or selected.address or day.hotel_area or day.stay.area
             focus = location_names[0] if location_names else resolved_area or request.destination
+            hotel_changed = not self._same_hotel_name(day.stay.hotel_name, selected.name)
             updated_days.append(
                 day.model_copy(
                     update={
@@ -70,13 +76,18 @@ class HotelRecommendationAgent:
                                 "area": resolved_area,
                                 "hotel_name": selected.name,
                                 "reason": f"更贴近{focus}等当日活动区域，往返更省时。",
+                                "room_nightly_cost_cny": 0 if hotel_changed else day.stay.room_nightly_cost_cny,
                             }
                         ),
                     }
                 )
             )
 
-        summary = "已按每日活动区域校正住宿推荐。" if rebound_days else "未命中需要校正的每日住宿推荐。"
+        summary = (
+            "已按每日活动区域校正住宿推荐。"
+            if rebound_days
+            else "未命中需要校正的每日住宿推荐。"
+        )
         return (
             plan.model_copy(update={"days": updated_days}),
             self._merge_unique_hotels([*selected_hotels, *context.hotels]),
@@ -89,6 +100,19 @@ class HotelRecommendationAgent:
                 warnings=warnings,
             ),
         )
+
+    def _same_hotel_name(
+        self,
+        current_name: str,
+        selected_name: str,
+    ) -> bool:
+        return self._normalize_hotel_name(current_name) == self._normalize_hotel_name(selected_name)
+
+    def _normalize_hotel_name(
+        self,
+        value: str,
+    ) -> str:
+        return (value or "").strip().lower()
 
     def _merge_unique_hotels(
         self,

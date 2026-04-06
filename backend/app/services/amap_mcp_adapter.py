@@ -24,6 +24,7 @@ from app.schemas.planning import (
     WeatherSummary,
 )
 from app.services.mcp_stdio_client import MCPProtocolError, MCPStdioClient
+from app.utils.local_cuisine import get_city_signature_keywords, get_generic_local_food_keywords
 from app.utils.json_extract import extract_json_payload
 
 
@@ -57,11 +58,6 @@ class AmapMCPAdapter:
     @property
     def has_client(self) -> bool:
         return self.client is not None
-
-    def mock_context(
-        self, request: TripPlanningRequest
-    ) -> tuple[PlanningContext, list[ToolCallRecord]]:
-        return self._mock_context(request)
 
     @asynccontextmanager
     async def request_scope(self):
@@ -102,8 +98,8 @@ class AmapMCPAdapter:
                     )
             except Exception as exc:
                 warnings.append(self._format_connection_error(exc))
-        elif not self.settings.enable_mock_mcp:
-            warnings.append("未配置 MCP 启动命令，且已关闭 Mock。规划请求会直接失败。")
+        else:
+            warnings.append("未配置 MCP 启动命令，规划请求会直接失败。")
 
         if self.settings.amap_api_key and not self.settings.amap_security_js_code:
             warnings.append("已配置高德 JS Key，但未配置安全密钥；如果控制台开启了安全校验，前端地图会加载失败。")
@@ -118,37 +114,8 @@ class AmapMCPAdapter:
             map_rendering_enabled=self.settings.has_map_rendering,
             map_js_key_configured=bool(self.settings.amap_api_key),
             security_js_code_configured=bool(self.settings.amap_security_js_code),
-            mock_enabled=self.settings.enable_mock_mcp,
             warnings=warnings,
         )
-
-    async def collect_context(
-        self, request: TripPlanningRequest
-    ) -> tuple[PlanningContext, list[ToolCallRecord]]:
-        if self.client is None:
-            return self._mock_context(request)
-
-        trace: list[ToolCallRecord] = []
-        try:
-            attractions = await self.fetch_attractions(request, trace)
-            restaurants = await self.fetch_restaurants(request, trace, anchor_pois=attractions)
-            hotels = await self.fetch_hotels(request, trace)
-            weather = await self.fetch_weather(request, trace)
-            return (
-                PlanningContext(
-                    destination=request.destination,
-                    attractions=attractions[:12],
-                    restaurants=restaurants[:12],
-                    hotels=hotels[:8],
-                    routes=[],
-                    weather=weather,
-                ),
-                trace,
-            )
-        except Exception:
-            if self.settings.enable_mock_mcp:
-                return self._mock_context(request)
-            raise
 
     async def fetch_attractions(
         self, request: TripPlanningRequest, trace: list[ToolCallRecord]
@@ -188,6 +155,8 @@ class AmapMCPAdapter:
                 queries.append(f"{poi.district} 美食")
         for preference in request.dining_preferences[:3]:
             queries.extend([preference, f"{preference} 餐厅"])
+        for keyword in get_city_signature_keywords(request.destination)[:3]:
+            queries.extend([keyword, f"{request.destination} {keyword}", f"{keyword} 餐厅"])
         queries.extend(["本地美食", "特色餐厅", "热门餐厅"])
         merged = await self._search_poi_candidates(
             city=request.destination,
@@ -241,6 +210,13 @@ class AmapMCPAdapter:
             queries.extend([f"{stay_hint} 附近 早餐", f"{stay_hint} 附近 餐厅"])
         if area_hint:
             queries.extend([f"{area_hint} 美食", f"{area_hint} 餐厅"])
+        for keyword in get_city_signature_keywords(request.destination)[:3]:
+            queries.extend(
+                [
+                    f"{request.destination} {keyword}",
+                    f"{area_hint or request.destination} {keyword}",
+                ]
+            )
         queries.extend(["本地美食", "特色餐厅", "热门餐厅"])
 
         merged = await self._search_poi_candidates(
@@ -1359,7 +1335,7 @@ class AmapMCPAdapter:
             polyline=polyline,
         )
 
-    def _mock_context(
+    def _legacy_mock_context(
         self, request: TripPlanningRequest
     ) -> tuple[PlanningContext, list[ToolCallRecord]]:
         city = request.destination
@@ -1764,13 +1740,46 @@ class AmapMCPAdapter:
         anchor_pois: list[POIRecommendation],
     ) -> list[POIRecommendation]:
         center = self._anchor_center(anchor_pois) if anchor_pois else self._city_center(city)
+        city_signature_words = get_city_signature_keywords(city)
+        generic_local_words = get_generic_local_food_keywords()
 
         def _is_restaurant(poi: POIRecommendation) -> bool:
-            name = poi.name
+            text = f"{poi.name} {' '.join(str(tag) for tag in poi.tags)}"
             tags = [str(tag) for tag in poi.tags]
-            name_hit = any(word in name for word in ("餐厅", "饭店", "酒楼", "馆", "小吃", "奶茶", "咖啡"))
+            name_hit = any(word in text for word in ("餐厅", "饭店", "酒楼", "馆", "小吃", "奶茶", "咖啡"))
             tag_hit = any(tag.startswith("05") for tag in tags)
-            return name_hit or tag_hit
+            signature_hit = any(word in text for word in city_signature_words)
+            return name_hit or tag_hit or signature_hit
+
+        def _is_chain_restaurant(poi: POIRecommendation) -> bool:
+            text = f"{poi.name} {' '.join(str(tag) for tag in poi.tags)}"
+            chain_words = (
+                "肯德基",
+                "麦当劳",
+                "德克士",
+                "必胜客",
+                "汉堡王",
+                "星巴克",
+                "瑞幸",
+                "喜茶",
+                "奈雪",
+                "沪上阿姨",
+                "costa",
+                "kfc",
+                "mcdonald",
+            )
+            return any(word.lower() in text.lower() for word in chain_words)
+
+        def _is_local_flavor(poi: POIRecommendation) -> bool:
+            text = f"{poi.name} {' '.join(str(tag) for tag in poi.tags)}"
+            local_words = (*generic_local_words, "闽南")
+            return any(word in text for word in local_words)
+
+        def _is_city_signature(poi: POIRecommendation) -> bool:
+            if not city_signature_words:
+                return False
+            text = f"{poi.name} {' '.join(str(tag) for tag in poi.tags)}"
+            return any(word in text for word in city_signature_words)
 
         return sorted(
             restaurants,
@@ -1778,6 +1787,9 @@ class AmapMCPAdapter:
                 0 if self._has_coordinates(poi) else 1,
                 0 if bool((poi.district or "").strip()) else 1,
                 0 if _is_restaurant(poi) else 1,
+                0 if _is_city_signature(poi) else 1,
+                0 if _is_local_flavor(poi) else 1,
+                1 if _is_chain_restaurant(poi) else 0,
                 self._distance_score(poi, center),
             ),
         )

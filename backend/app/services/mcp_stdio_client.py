@@ -6,7 +6,7 @@ import os
 import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 
 class MCPProtocolError(RuntimeError):
@@ -40,8 +40,14 @@ class MCPStdioClient:
         if not self.resolved_command:
             raise MCPProtocolError("MCP command is empty.")
         if not Path(self.resolved_command).exists() and shutil.which(self.resolved_command) is None:
-            candidates = f"；已检查: {' | '.join(self._candidate_commands)}" if self._candidate_commands else ""
-            raise MCPProtocolError(f"MCP 启动命令不存在: {self.command}{candidates}")
+            candidates = (
+                f"；已检查: {' | '.join(self._candidate_commands)}"
+                if self._candidate_commands
+                else ""
+            )
+            raise MCPProtocolError(
+                f"MCP 启动命令不存在: {self.command}{candidates}"
+            )
 
         self._load_sdk()
 
@@ -68,13 +74,6 @@ class MCPStdioClient:
 
         ClientSession, StdioServerParameters, stdio_client = self._load_sdk()
 
-        if self._is_windows_selector_policy():
-            raise MCPProtocolError(
-                "当前后端运行在 WindowsSelectorEventLoopPolicy 下，无法使用 stdio MCP 子进程。"
-                "这通常是因为使用了 uvicorn --reload。"
-                "请改用不带 --reload 的启动方式，或改造成独立的 HTTP/SSE MCP 服务。"
-            )
-
         server_params = StdioServerParameters(
             command=self.resolved_command,
             args=self.args,
@@ -94,6 +93,8 @@ class MCPStdioClient:
         except Exception as exc:
             if completed and self._contains_exception_type(exc, UnicodeDecodeError):
                 return
+            if self._contains_exception_type(exc, NotImplementedError):
+                raise MCPProtocolError(self._windows_selector_runtime_message()) from exc
             raise MCPProtocolError(f"MCP SDK 调用失败: {self._format_exception(exc)}") from exc
 
     def get_debug_snapshot(self) -> dict[str, Any]:
@@ -104,19 +105,12 @@ class MCPStdioClient:
             "stderr_tail": self.stderr_tail[-5:],
         }
 
-    async def _run_with_session(self, operation):
+    async def _run_with_session(self, operation: Callable[[Any], Awaitable[Any]]):
         active_session = self._active_session.get()
         if active_session is not None:
             return await operation(active_session)
 
         ClientSession, StdioServerParameters, stdio_client = self._load_sdk()
-
-        if self._is_windows_selector_policy():
-            raise MCPProtocolError(
-                "当前后端运行在 WindowsSelectorEventLoopPolicy 下，无法使用 stdio MCP 子进程。"
-                "这通常是因为使用了 uvicorn --reload。"
-                "请改用不带 --reload 的启动方式，或改造成独立的 HTTP/SSE MCP 服务。"
-            )
 
         server_params = StdioServerParameters(
             command=self.resolved_command,
@@ -130,6 +124,8 @@ class MCPStdioClient:
                     await session.initialize()
                     return await operation(session)
         except Exception as exc:
+            if self._contains_exception_type(exc, NotImplementedError):
+                raise MCPProtocolError(self._windows_selector_runtime_message()) from exc
             raise MCPProtocolError(f"MCP SDK 调用失败: {self._format_exception(exc)}") from exc
 
     async def _list_tools_once(self, session) -> dict[str, Any]:
@@ -184,15 +180,12 @@ class MCPStdioClient:
 
         return ClientSession, StdioServerParameters, stdio_client
 
-    def _is_windows_selector_policy(self) -> bool:
-        if os.name != "nt":
-            return False
-
-        policy = asyncio.get_event_loop_policy()
-        selector_cls = getattr(asyncio, "WindowsSelectorEventLoopPolicy", None)
-        if selector_cls is None:
-            return False
-        return isinstance(policy, selector_cls)
+    def _windows_selector_runtime_message(self) -> str:
+        return (
+            "当前后端运行在 Windows Selector 事件循环下，无法使用 stdio MCP 子进程。"
+            "这通常是因为使用了 uvicorn --reload。"
+            "请改用不带 --reload 的启动方式，或改成独立的 HTTP/SSE MCP 服务。"
+        )
 
     def _resolve_command(self) -> str:
         command = self.command.strip()
@@ -253,7 +246,12 @@ class MCPStdioClient:
                 "all_proxy",
             ):
                 env.pop(key, None)
-            no_proxy_hosts = ["127.0.0.1", "localhost", "restapi.amap.com", "api-inference.modelscope.cn"]
+            no_proxy_hosts = [
+                "127.0.0.1",
+                "localhost",
+                "restapi.amap.com",
+                "api-inference.modelscope.cn",
+            ]
             env["NO_PROXY"] = ",".join(no_proxy_hosts)
             env["no_proxy"] = env["NO_PROXY"]
 
@@ -268,7 +266,9 @@ class MCPStdioClient:
                 if isinstance(child, Exception)
             ]
             child_text = " | ".join(children)
-            return f"{exc.__class__.__name__}: {exc}" + (f" -> {child_text}" if child_text else "")
+            return f"{exc.__class__.__name__}: {exc}" + (
+                f" -> {child_text}" if child_text else ""
+            )
 
         base = f"{exc.__class__.__name__}: {exc}" if str(exc) else exc.__class__.__name__
         cause = exc.__cause__ or exc.__context__

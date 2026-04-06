@@ -14,8 +14,13 @@ class TravelPlannerService:
         self,
         request: TripPlanningRequest,
         generated_at: datetime,
+        include_debug: bool = True,
     ) -> PlanningResponse:
-        return await self.coordinator.generate(request, generated_at)
+        return await self.coordinator.generate(
+            request,
+            generated_at,
+            include_debug=include_debug,
+        )
 
     async def diagnose_integrations(self) -> IntegrationStatus:
         return await self.coordinator.diagnose()

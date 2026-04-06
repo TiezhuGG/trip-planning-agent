@@ -29,7 +29,7 @@ const emit = defineEmits<{
       </button>
     </div>
 
-    <div class="mt-5 grid gap-3 sm:grid-cols-2">
+    <div class="mt-5 grid gap-3 sm:grid-cols-3">
       <div class="rounded-[22px] border border-[#e3ebf2] bg-[#f5f8fb] px-4 py-4 text-sm text-slate-600">
         <div class="text-xs text-slate-500">MCP</div>
         <div class="mt-2 font-medium text-ink">
@@ -52,12 +52,6 @@ const emit = defineEmits<{
         <div class="text-xs text-slate-500">地图</div>
         <div class="mt-2 font-medium text-ink">
           {{ integrationStatus.map_js_key_configured ? "已配置 JS Key" : "缺少 JS Key" }}
-        </div>
-      </div>
-      <div class="rounded-[22px] border border-[#e3ebf2] bg-[#f5f8fb] px-4 py-4 text-sm text-slate-600">
-        <div class="text-xs text-slate-500">Mock</div>
-        <div class="mt-2 font-medium text-ink">
-          {{ integrationStatus.mock_enabled ? "已开启" : "已关闭" }}
         </div>
       </div>
     </div>

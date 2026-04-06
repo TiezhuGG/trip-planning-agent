@@ -51,7 +51,10 @@ class PlanningCoordinatorAgent:
         return integration_status
 
     async def generate(
-        self, request: TripPlanningRequest, generated_at: datetime
+        self,
+        request: TripPlanningRequest,
+        generated_at: datetime,
+        include_debug: bool = True,
     ) -> PlanningResponse:
         agent_trace: list[AgentExecution] = []
         tool_trace = []
@@ -232,14 +235,26 @@ class PlanningCoordinatorAgent:
                 plan=plan,
                 context=context,
             )
-            plan, truth_trace = await self.route_agent.bind_plan_truth(
-                request=request,
-                plan=plan,
-                context=context,
-                trace=tool_trace,
-            )
             agent_trace.append(route_trace)
             warnings.extend(route_trace.warnings)
+            try:
+                plan, truth_trace = await self.route_agent.bind_plan_truth(
+                    request=request,
+                    plan=plan,
+                    context=context,
+                    trace=tool_trace,
+                )
+            except Exception as exc:
+                warning = f"plan_truth_agent 调用失败: {exc}"
+                warnings.append(warning)
+                truth_trace = AgentExecution(
+                    agent_name="plan_truth_agent",
+                    success=False,
+                    summary="最终点位校正失败，已保留基础行程结果继续返回。",
+                    used_llm=False,
+                    used_tools=[],
+                    warnings=[str(exc)],
+                )
             agent_trace.append(truth_trace)
             warnings.extend(truth_trace.warnings)
 
@@ -267,10 +282,10 @@ class PlanningCoordinatorAgent:
             )
             response_status = self._resolve_response_status(
                 fallback_used=fallback_used,
-                warnings=diagnostics.warnings,
+                diagnostics=diagnostics,
             )
 
-            return PlanningResponse(
+            response = PlanningResponse(
                 status=response_status,
                 generated_at=generated_at,
                 request_echo=request,
@@ -294,6 +309,21 @@ class PlanningCoordinatorAgent:
                 integration_status=integration_status,
                 plan=plan,
             )
+            if include_debug:
+                return response
+            return self._compact_response(response)
+
+    def _compact_response(self, response: PlanningResponse) -> PlanningResponse:
+        return response.model_copy(
+            update={
+                "planning_context": PlanningContext(
+                    destination=response.planning_context.destination,
+                    weather=response.planning_context.weather,
+                ),
+                "agent_trace": [],
+                "tool_trace": [],
+            }
+        )
 
     def _resolve_center(self, context: PlanningContext, plan=None) -> GeoPoint | None:
         if plan is not None:
@@ -312,11 +342,11 @@ class PlanningCoordinatorAgent:
     def _resolve_response_status(
         self,
         fallback_used: bool,
-        warnings: list[str],
+        diagnostics: PlanDiagnostics,
     ) -> str:
         if fallback_used:
             return "fallback_success"
-        if warnings:
+        if any(item.status == "error" for item in [*diagnostics.llm, *diagnostics.mcp]):
             return "partial_success"
         return "success"
 

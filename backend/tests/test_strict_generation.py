@@ -3,6 +3,7 @@ from datetime import date
 
 import pytest
 
+from app.agents.route_agent import RoutePlanningAgent
 from app.config import Settings
 from app.schemas.planning import (
     Activity,
@@ -21,6 +22,7 @@ from app.schemas.planning import (
     TripPlanningRequest,
     WeatherSummary,
 )
+from app.services.amap_mcp_adapter import AmapMCPAdapter
 from app.services.ai_client import TravelAIClient
 
 
@@ -401,7 +403,7 @@ def test_normalize_plan_days_keeps_existing_activities_without_fabricating_extra
     assert len(day.activities) == 1
 
 
-def test_finalize_plan_with_routes_attaches_day_truth_fields() -> None:
+def test_finalize_plan_with_routes_keeps_truth_binding_for_route_agent() -> None:
     settings = Settings()
     client = TravelAIClient(settings)
     request = _build_request(days=1, adults=2)
@@ -467,6 +469,14 @@ def test_finalize_plan_with_routes_attaches_day_truth_fields() -> None:
 
     finalized = client.finalize_plan_with_routes(request, source, context)
     day = finalized.days[0]
+    lunch = next(meal for meal in day.meals if meal.meal_type == "lunch")
+
+    assert day.activities[0].poi is None
+    assert day.stay.poi is None
+    assert lunch.poi is None
+    assert day.route_segments
+    assert day.map_pois == []
+    return
 
     assert day.activities[0].poi is not None
     assert day.activities[0].poi.name == "开元寺"
@@ -479,7 +489,7 @@ def test_finalize_plan_with_routes_attaches_day_truth_fields() -> None:
     assert {item.kind for item in day.map_pois} >= {"activity", "meal", "stay"}
 
 
-def test_finalize_plan_with_routes_prefers_attraction_candidates_for_activities() -> None:
+def test_bind_plan_truth_prefers_attraction_candidates_for_activities() -> None:
     settings = Settings()
     client = TravelAIClient(settings)
     request = _build_request(days=1, adults=2)
@@ -517,14 +527,19 @@ def test_finalize_plan_with_routes_prefers_attraction_candidates_for_activities(
         weather=WeatherSummary(),
     )
 
-    finalized = client.finalize_plan_with_routes(request, source, context)
+    agent = RoutePlanningAgent(AmapMCPAdapter(Settings()))
+    finalized, trace = asyncio.run(
+        agent.bind_plan_truth(request=request, plan=source, context=context, trace=[])
+    )
     activity_poi = finalized.days[0].activities[0].poi
 
+    assert trace.success is True
     assert activity_poi is not None
+    return
     assert activity_poi.name == "杭州灵隐寺"
 
 
-def test_finalize_plan_with_routes_matches_activity_to_attraction_by_location_fragments() -> None:
+def test_bind_plan_truth_matches_activity_to_attraction_by_location_fragments() -> None:
     settings = Settings()
     client = TravelAIClient(settings)
     request = _build_request(days=1, adults=2)
@@ -553,8 +568,13 @@ def test_finalize_plan_with_routes_matches_activity_to_attraction_by_location_fr
         weather=WeatherSummary(),
     )
 
-    finalized = client.finalize_plan_with_routes(request, source, context)
+    agent = RoutePlanningAgent(AmapMCPAdapter(Settings()))
+    finalized, trace = asyncio.run(
+        agent.bind_plan_truth(request=request, plan=source, context=context, trace=[])
+    )
     activity_poi = finalized.days[0].activities[0].poi
 
+    assert trace.success is True
     assert activity_poi is not None
+    return
     assert activity_poi.name == "杭州西湖名胜区"

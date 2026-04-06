@@ -1,7 +1,5 @@
 ﻿<script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
-import html2canvas from "html2canvas";
-import jsPDF from "jspdf";
 
 import { generatePlan, getIntegrationStatus } from "./api/planning";
 import AgentTrace from "./components/AgentTrace.vue";
@@ -13,9 +11,11 @@ import NotificationModal from "./components/NotificationModal.vue";
 import PlannerLaunchPanel from "./components/PlannerLaunchPanel.vue";
 import TravelTonePanel from "./components/TravelTonePanel.vue";
 import type {
+  DailyForecast,
   DayPOI,
   IntegrationStatus,
   PlanningResponse,
+  RouteSummary,
   TripPlanningRequest,
   TravelerProfile,
 } from "./types/planning";
@@ -97,6 +97,16 @@ let progressTimer: number | null = null;
 const currentIntegrationStatus = computed(
   () => result.value?.integration_status ?? integrationStatus.value,
 );
+function resolveDayRoutes(day: {
+  route_segments?: RouteSummary[];
+  route_summaries?: RouteSummary[];
+  route_summary?: RouteSummary | null;
+}): RouteSummary[] {
+  if (day.route_segments?.length) return day.route_segments;
+  if (day.route_summaries?.length) return day.route_summaries;
+  if (day.route_summary) return [day.route_summary];
+  return [];
+}
 const itineraryMapPois = computed<DayPOI[]>(() => {
   const response = result.value;
   if (!response) return [];
@@ -114,9 +124,17 @@ const itineraryMapPois = computed<DayPOI[]>(() => {
   return selected;
 });
 const itineraryRoutes = computed(() =>
-  result.value?.plan.days.flatMap((day) => day.route_segments ?? day.route_summaries ?? []) ??
-  [],
+  result.value?.plan.days.flatMap((day) => resolveDayRoutes(day)) ?? [],
 );
+const itineraryWeatherForecasts = computed<DailyForecast[]>(() => {
+  const response = result.value;
+  if (!response) return [];
+  const daily = response.plan.days
+    .map((day) => day.weather)
+    .filter((item): item is DailyForecast => Boolean(item));
+  if (daily.length) return daily;
+  return response.planning_context.weather.daily_forecasts ?? [];
+});
 const travelerSummary = computed(() => formatTravelers(form.travelers));
 const inputSummary = computed(() => [
   {
@@ -245,7 +263,6 @@ function createEmptyIntegrationStatus(): IntegrationStatus {
     map_rendering_enabled: false,
     map_js_key_configured: false,
     security_js_code_configured: false,
-    mock_enabled: true,
     warnings: [],
   };
 }
@@ -348,21 +365,24 @@ async function submitPlan() {
   form.dining_preferences = splitText(diningText.value);
   startProgress();
   try {
-    result.value = await generatePlan({
-      ...form,
-      origin: form.origin?.trim() || null,
-      destination: normalizedDestination,
-      hotel_style: form.hotel_style || "舒适型酒店",
-      interests: [...form.interests],
-      must_visit: [...form.must_visit],
-      transport_preferences: [...form.transport_preferences],
-      dining_preferences: [...form.dining_preferences],
-      travelers: {
-        adults: Number(form.travelers.adults) || 1,
-        children: Number(form.travelers.children) || 0,
-        seniors: Number(form.travelers.seniors) || 0,
+    result.value = await generatePlan(
+      {
+        ...form,
+        origin: form.origin?.trim() || null,
+        destination: normalizedDestination,
+        hotel_style: form.hotel_style || "舒适型酒店",
+        interests: [...form.interests],
+        must_visit: [...form.must_visit],
+        transport_preferences: [...form.transport_preferences],
+        dining_preferences: [...form.dining_preferences],
+        travelers: {
+          adults: Number(form.travelers.adults) || 1,
+          children: Number(form.travelers.children) || 0,
+          seniors: Number(form.travelers.seniors) || 0,
+        },
       },
-    });
+      { debug: showDevPanels },
+    );
     integrationStatus.value = result.value.integration_status;
     expandedDays.value = [];
     stopProgress(true);
@@ -390,6 +410,10 @@ async function exportAs(type: "png" | "pdf") {
   expandedDays.value = result.value.plan.days.map((day) => day.day_number);
   await nextTick();
   try {
+    const [{ default: html2canvas }, { default: jsPDF }] = await Promise.all([
+      import("html2canvas"),
+      import("jspdf"),
+    ]);
     const canvas = await html2canvas(exportRoot.value, {
       scale: 2,
       backgroundColor: "#eef4f9",
@@ -784,9 +808,7 @@ function budgetLabel(value: TripPlanningRequest["budget_level"]) {
             <DailyItinerarySection
               :days="result.plan.days"
               :routes="itineraryRoutes"
-              :weather-forecasts="
-                result.planning_context.weather.daily_forecasts
-              "
+              :weather-forecasts="itineraryWeatherForecasts"
               :expanded-days="expandedDays"
               @toggle="toggleDay"
             />

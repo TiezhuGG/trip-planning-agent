@@ -52,8 +52,13 @@ const mapSignature = computed(() =>
     ]),
     routes: props.routes.map((route) => [
       route.day_number,
+      route.title,
+      route.from_name,
+      route.to_name,
       route.mode,
-      route.polyline.length,
+      route.distance_text,
+      route.duration_text,
+      route.polyline.map((point) => [point.longitude, point.latitude]),
     ]),
   }),
 );

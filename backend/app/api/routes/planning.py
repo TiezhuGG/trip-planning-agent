@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from functools import lru_cache
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from app.config import get_settings
 from app.schemas.planning import IntegrationStatus, PlanningResponse, TripPlanningRequest
@@ -30,9 +30,16 @@ async def get_integration_status() -> IntegrationStatus:
 
 
 @router.post("/plans/generate", response_model=PlanningResponse)
-async def generate_plan(payload: TripPlanningRequest) -> PlanningResponse:
+async def generate_plan(
+    payload: TripPlanningRequest,
+    debug: bool = Query(default=False),
+) -> PlanningResponse:
     try:
-        return await get_planner_service().generate(payload, generated_at=datetime.now(timezone.utc))
+        return await get_planner_service().generate(
+            payload,
+            generated_at=datetime.now(timezone.utc),
+            include_debug=debug,
+        )
     except Exception as exc:
         code, message, status_code = _classify_generation_error(exc)
         raise HTTPException(
@@ -45,8 +52,19 @@ async def generate_plan(payload: TripPlanningRequest) -> PlanningResponse:
 
 
 def _classify_generation_error(exc: Exception) -> tuple[str, str, int]:
-    message = f"{exc.__class__.__name__}: {exc}".lower()
-    if "destination" in message or "城市名" in message or "valueerror" in message:
+    raw_message = f"{exc.__class__.__name__}: {exc}"
+    message = raw_message.lower()
+    validation_markers = (
+        "validationerror",
+        "tripplanningrequest",
+        "field required",
+        "目的地仅支持中文城市名",
+        "仅支持中文城市名",
+    )
+
+    if any(marker.lower() in message for marker in validation_markers):
+        return "VALIDATION_ERROR", "请求参数不合法，请检查目的地和出行信息。", 422
+    if "destination" in message and "城市名" in raw_message:
         return "VALIDATION_ERROR", "请求参数不合法，请检查目的地和出行信息。", 422
     if "429" in message or "ratelimit" in message or "setlimitexceeded" in message:
         return "LLM_RATE_LIMIT", "大模型服务当前限流，系统暂时无法完成本次规划，请稍后重试。", 503

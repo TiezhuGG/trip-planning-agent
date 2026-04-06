@@ -272,7 +272,6 @@ class IntegrationStatus(BaseModel):
     map_rendering_enabled: bool = False
     map_js_key_configured: bool = False
     security_js_code_configured: bool = False
-    mock_enabled: bool = True
     warnings: list[str] = Field(default_factory=list)
 
 

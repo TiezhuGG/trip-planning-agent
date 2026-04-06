@@ -40,14 +40,21 @@ export async function getIntegrationStatus(): Promise<IntegrationStatus> {
 
 export async function generatePlan(
   payload: TripPlanningRequest,
+  options: { debug?: boolean } = {},
 ): Promise<PlanningResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/plans/generate`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
+  const params = new URLSearchParams();
+  if (options.debug) params.set("debug", "true");
+  const query = params.toString();
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/plans/generate${query ? `?${query}` : ""}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
     },
-    body: JSON.stringify(payload),
-  });
+  );
 
   if (!response.ok) {
     throw new Error(await extractErrorMessage(response, "生成旅行计划失败"));

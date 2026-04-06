@@ -261,7 +261,6 @@ export interface IntegrationStatus {
   map_rendering_enabled: boolean
   map_js_key_configured: boolean
   security_js_code_configured: boolean
-  mock_enabled: boolean
   warnings: string[]
 }
 
