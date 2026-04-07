@@ -21,6 +21,7 @@ class RoutePlanningAgent:
         self.adapter = adapter
         # Keep low concurrency to balance latency and upstream rate-limit pressure.
         self._segment_concurrency = 2
+        self._truth_binding_day_concurrency = 2
         self._named_location_cache: dict[str, POIRecommendation | None] = {}
 
     async def gather(
@@ -325,142 +326,29 @@ class RoutePlanningAgent:
         trace: list[ToolCallRecord],
     ) -> tuple[TravelPlan, AgentExecution]:
         self._named_location_cache.clear()
-        updated_days: list[DayPlan] = []
         warnings: list[str] = []
+        sorted_days = sorted(plan.days, key=lambda item: item.day_number)
+        day_concurrency = min(self._truth_binding_day_concurrency, max(1, len(sorted_days)))
+        semaphore = asyncio.Semaphore(day_concurrency)
 
-        for day in sorted(plan.days, key=lambda item: item.day_number):
-            anchor_points = [*context.attractions, *context.hotels]
-            day_fallbacks = list(day.fallbacks)
-            map_pois: list[DayPOI] = []
-            route_segments = list(day.route_segments or day.route_summaries)
-            if not route_segments and day.route_summary is not None:
-                route_segments = [day.route_summary]
-
-            stay_poi = day.stay.poi
-            if self._should_rebind_poi(stay_poi):
-                try:
-                    stay_poi = await self._resolve_origin_for_day(
-                        request=request,
-                        day=day,
-                        context=context,
-                        anchor_points=anchor_points,
-                        trace=trace,
-                    )
-                except Exception as exc:
-                    warnings.append(
-                        f"第 {day.day_number} 天住宿点位校正失败，已保留原住宿信息。原因: {exc}"
-                    )
-                    day_fallbacks.append("stay_poi_binding_failed")
-            if stay_poi is not None:
-                stay_poi = self._ensure_route_ready_poi(stay_poi, request.destination)
-            updated_stay = day.stay.model_copy(update={"poi": stay_poi})
-            if stay_poi is not None and updated_stay.hotel_name:
-                map_pois.append(
-                    DayPOI(kind="stay", label=updated_stay.hotel_name, poi=stay_poi)
+        async def _bind_day(index: int, day: DayPlan):
+            async with semaphore:
+                updated_day, day_warnings = await self._bind_truth_for_day(
+                    request=request,
+                    day=day,
+                    context=context,
+                    trace=trace,
                 )
-            elif updated_stay.hotel_name:
-                day_fallbacks.append("stay_poi_unresolved")
+            return index, updated_day, day_warnings
 
-            updated_activities = []
-            for activity in day.activities:
-                resolved = activity.poi
-                if self._should_rebind_poi(resolved):
-                    try:
-                        resolved = await self._resolve_activity_location(
-                            city=request.destination,
-                            location_name=activity.location_name,
-                            activity_title=activity.title,
-                            context=context,
-                            trace=trace,
-                            anchor_points=anchor_points,
-                        ) or resolved
-                    except Exception as exc:
-                        warnings.append(
-                            f"第 {day.day_number} 天活动点位校正失败，已保留原活动信息。"
-                            f"活动: {activity.location_name or activity.title}；原因: {exc}"
-                        )
-                        day_fallbacks.append(
-                            f"activity_poi_binding_failed:{activity.location_name}"
-                        )
-                if resolved is not None:
-                    resolved = self._ensure_route_ready_poi(resolved, request.destination)
-                updated_activity = activity.model_copy(update={"poi": resolved})
-                updated_activities.append(updated_activity)
-                if resolved is not None:
-                    map_pois.append(
-                        DayPOI(
-                            kind="activity",
-                            label=activity.title or activity.location_name,
-                            poi=resolved,
-                        )
-                    )
-                elif activity.location_name:
-                    day_fallbacks.append(
-                        f"activity_poi_unresolved:{activity.location_name}"
-                    )
-
-            updated_meals = []
-            for meal in day.meals:
-                resolved_meal = meal.poi
-                if self._should_rebind_poi(resolved_meal) and meal.venue_name:
-                    try:
-                        resolved_meal = await self._resolve_named_location(
-                            city=request.destination,
-                            location_name=meal.venue_name,
-                            known_points=context.restaurants,
-                            trace=trace,
-                            anchor_points=context.restaurants or anchor_points,
-                        ) or resolved_meal
-                    except Exception as exc:
-                        warnings.append(
-                            f"第 {day.day_number} 天餐饮点位校正失败，已保留原餐饮信息。"
-                            f"餐厅: {meal.venue_name}；原因: {exc}"
-                        )
-                        day_fallbacks.append(
-                            f"meal_poi_binding_failed:{meal.venue_name}"
-                        )
-                if resolved_meal is None and meal.meal_type == "breakfast":
-                    resolved_meal = updated_stay.poi
-                if resolved_meal is not None:
-                    resolved_meal = self._ensure_route_ready_poi(
-                        resolved_meal,
-                        request.destination,
-                    )
-                updated_meal = meal.model_copy(update={"poi": resolved_meal})
-                updated_meals.append(updated_meal)
-                if resolved_meal is not None:
-                    map_pois.append(
-                        DayPOI(
-                            kind="meal",
-                            label=meal.meal_type,
-                            poi=resolved_meal,
-                        )
-                    )
-                elif meal.venue_name:
-                    day_fallbacks.append(f"meal_poi_unresolved:{meal.venue_name}")
-
-            if updated_activities and not any(
-                item.poi.longitude is not None and item.poi.latitude is not None
-                for item in map_pois
-                if item.kind == "activity"
-            ):
-                warnings.append(
-                    f"第 {day.day_number} 天活动点位仍缺少坐标，地图仅展示已成功定位的点位。"
-                )
-                day_fallbacks.append("activity_coordinates_unresolved")
-
-            updated_days.append(
-                day.model_copy(
-                    update={
-                        "stay": updated_stay,
-                        "activities": updated_activities,
-                        "meals": updated_meals,
-                        "map_pois": self._build_unique_day_pois(map_pois),
-                        "route_segments": route_segments,
-                        "fallbacks": sorted(set(day_fallbacks)),
-                    }
-                )
-            )
+        day_results = await asyncio.gather(
+            *[_bind_day(index, day) for index, day in enumerate(sorted_days)]
+        )
+        day_results.sort(key=lambda item: item[0])
+        updated_days: list[DayPlan] = []
+        for _, updated_day, day_warnings in day_results:
+            updated_days.append(updated_day)
+            warnings.extend(day_warnings)
 
         summary = "已完成最终点位校正。"
         if warnings:
@@ -475,6 +363,148 @@ class RoutePlanningAgent:
                 used_tools=[],
                 warnings=warnings,
             ),
+        )
+
+    async def _bind_truth_for_day(
+        self,
+        request: TripPlanningRequest,
+        day: DayPlan,
+        context: PlanningContext,
+        trace: list[ToolCallRecord],
+    ) -> tuple[DayPlan, list[str]]:
+        anchor_points = [*context.attractions, *context.hotels]
+        day_fallbacks = list(day.fallbacks)
+        map_pois: list[DayPOI] = []
+        day_warnings: list[str] = []
+        route_segments = list(day.route_segments or day.route_summaries)
+        if not route_segments and day.route_summary is not None:
+            route_segments = [day.route_summary]
+
+        stay_poi = day.stay.poi
+        if self._should_rebind_poi(stay_poi):
+            try:
+                stay_poi = await self._resolve_origin_for_day(
+                    request=request,
+                    day=day,
+                    context=context,
+                    anchor_points=anchor_points,
+                    trace=trace,
+                )
+            except Exception as exc:
+                day_warnings.append(
+                    f"第 {day.day_number} 天住宿点位校正失败，已保留原住宿信息。原因: {exc}"
+                )
+                day_fallbacks.append("stay_poi_binding_failed")
+        if stay_poi is not None:
+            stay_poi = self._ensure_route_ready_poi(stay_poi, request.destination)
+        updated_stay = day.stay.model_copy(update={"poi": stay_poi})
+        if stay_poi is not None and updated_stay.hotel_name:
+            map_pois.append(
+                DayPOI(kind="stay", label=updated_stay.hotel_name, poi=stay_poi)
+            )
+        elif updated_stay.hotel_name:
+            day_fallbacks.append("stay_poi_unresolved")
+
+        updated_activities = []
+        for activity in day.activities:
+            resolved = activity.poi
+            if self._should_rebind_poi(resolved):
+                try:
+                    resolved = await self._resolve_activity_location(
+                        city=request.destination,
+                        location_name=activity.location_name,
+                        activity_title=activity.title,
+                        context=context,
+                        trace=trace,
+                        anchor_points=anchor_points,
+                    ) or resolved
+                except Exception as exc:
+                    day_warnings.append(
+                        f"第 {day.day_number} 天活动点位校正失败，已保留原活动信息。"
+                        f"活动: {activity.location_name or activity.title}；原因: {exc}"
+                    )
+                    day_fallbacks.append(
+                        f"activity_poi_binding_failed:{activity.location_name}"
+                    )
+            if resolved is not None:
+                resolved = self._ensure_route_ready_poi(resolved, request.destination)
+            updated_activity = activity.model_copy(update={"poi": resolved})
+            updated_activities.append(updated_activity)
+            if resolved is not None:
+                map_pois.append(
+                    DayPOI(
+                        kind="activity",
+                        label=activity.title or activity.location_name,
+                        poi=resolved,
+                    )
+                )
+            elif activity.location_name:
+                day_fallbacks.append(
+                    f"activity_poi_unresolved:{activity.location_name}"
+                )
+
+        updated_meals = []
+        for meal in day.meals:
+            resolved_meal = meal.poi
+            if self._should_rebind_poi(resolved_meal) and meal.venue_name:
+                try:
+                    resolved_meal = await self._resolve_named_location(
+                        city=request.destination,
+                        location_name=meal.venue_name,
+                        known_points=context.restaurants,
+                        trace=trace,
+                        anchor_points=context.restaurants or anchor_points,
+                    ) or resolved_meal
+                except Exception as exc:
+                    day_warnings.append(
+                        f"第 {day.day_number} 天餐饮点位校正失败，已保留原餐饮信息。"
+                        f"餐厅: {meal.venue_name}；原因: {exc}"
+                    )
+                    day_fallbacks.append(
+                        f"meal_poi_binding_failed:{meal.venue_name}"
+                    )
+            if resolved_meal is None and meal.meal_type == "breakfast":
+                resolved_meal = updated_stay.poi
+            if resolved_meal is not None:
+                resolved_meal = self._ensure_route_ready_poi(
+                    resolved_meal,
+                    request.destination,
+                )
+            updated_meal = meal.model_copy(update={"poi": resolved_meal})
+            updated_meals.append(updated_meal)
+            if resolved_meal is not None:
+                map_pois.append(
+                    DayPOI(
+                        kind="meal",
+                        label=meal.meal_type,
+                        poi=resolved_meal,
+                    )
+                )
+            elif meal.venue_name:
+                day_fallbacks.append(f"meal_poi_unresolved:{meal.venue_name}")
+
+        if updated_activities and not any(
+            item.poi.longitude is not None and item.poi.latitude is not None
+            for item in map_pois
+            if item.kind == "activity"
+        ):
+            day_warnings.append(
+                f"第 {day.day_number} 天活动点位仍缺少坐标，地图仅展示已成功定位的点位。"
+            )
+            day_fallbacks.append("activity_coordinates_unresolved")
+
+        return (
+            day.model_copy(
+                update={
+                    "stay": updated_stay,
+                    "activities": updated_activities,
+                    "meals": updated_meals,
+                    "map_pois": self._build_unique_day_pois(map_pois),
+                    "route_segments": route_segments,
+                    "fallbacks": sorted(set(day_fallbacks)),
+                }
+            ),
+            day_warnings,
         )
 
     def _take_coordinate_points(

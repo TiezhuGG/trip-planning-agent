@@ -217,6 +217,119 @@ def test_route_agent_plans_days_in_parallel_for_final_plan() -> None:
     assert [route.day_number for route in routes] == [1, 2]
 
 
+def test_route_agent_bind_plan_truth_days_in_parallel() -> None:
+    class FakeAdapter:
+        pass
+
+    agent = RoutePlanningAgent(FakeAdapter())  # type: ignore[arg-type]
+    request = _request(days=2)
+    plan = TravelPlan(
+        title="Plan",
+        summary="Summary",
+        weather_summary="",
+        best_booking_tip="Tip",
+        estimated_budget=BudgetBreakdown(),
+        stay_recommendations=[],
+        city_tips=[],
+        packing_list=[],
+        days=[
+            DayPlan(
+                day_number=1,
+                date="2026-03-20",
+                theme="Day 1",
+                overview="Overview",
+                hotel_area="片区1",
+                stay={"area": "片区1", "hotel_name": "酒店1", "reason": "old"},
+                meals=[],
+                activities=[
+                    Activity(
+                        start_time="09:00",
+                        end_time="11:00",
+                        title="活动1",
+                        category="sightseeing",
+                        description="desc",
+                        location_name="活动地点1",
+                    )
+                ],
+                route_summaries=[],
+            ),
+            DayPlan(
+                day_number=2,
+                date="2026-03-21",
+                theme="Day 2",
+                overview="Overview",
+                hotel_area="片区2",
+                stay={"area": "片区2", "hotel_name": "酒店2", "reason": "old"},
+                meals=[],
+                activities=[
+                    Activity(
+                        start_time="09:00",
+                        end_time="11:00",
+                        title="活动2",
+                        category="sightseeing",
+                        description="desc",
+                        location_name="活动地点2",
+                    )
+                ],
+                route_summaries=[],
+            ),
+        ],
+    )
+    context = PlanningContext(destination="上海", attractions=[], hotels=[], restaurants=[])
+
+    day1_started = asyncio.Event()
+    day2_started = asyncio.Event()
+
+    async def fake_resolve_origin_for_day(
+        *,
+        request: TripPlanningRequest,
+        day: DayPlan,
+        context: PlanningContext,
+        anchor_points: list[POIRecommendation],
+        trace: list[ToolCallRecord],
+    ) -> POIRecommendation:
+        _ = (request, context, anchor_points, trace)
+        if day.day_number == 1:
+            day1_started.set()
+            await day2_started.wait()
+            return POIRecommendation(name="酒店1", district="上海", longitude=121.47, latitude=31.23)
+        day2_started.set()
+        await day1_started.wait()
+        return POIRecommendation(name="酒店2", district="上海", longitude=121.49, latitude=31.24)
+
+    async def fake_resolve_activity_location(
+        *,
+        city: str,
+        location_name: str,
+        activity_title: str,
+        context: PlanningContext,
+        trace: list[ToolCallRecord],
+        anchor_points: list[POIRecommendation],
+    ) -> POIRecommendation | None:
+        _ = (city, activity_title, context, trace, anchor_points)
+        mapping = {
+            "活动地点1": POIRecommendation(name="活动地点1", district="上海", longitude=121.48, latitude=31.235),
+            "活动地点2": POIRecommendation(name="活动地点2", district="上海", longitude=121.50, latitude=31.245),
+        }
+        return mapping.get(location_name)
+
+    agent._resolve_origin_for_day = fake_resolve_origin_for_day  # type: ignore[method-assign]
+    agent._resolve_activity_location = fake_resolve_activity_location  # type: ignore[method-assign]
+
+    rebound_plan, execution = asyncio.run(
+        asyncio.wait_for(
+            agent.bind_plan_truth(request=request, plan=plan, context=context, trace=[]),
+            timeout=1.0,
+        )
+    )
+
+    assert execution.success is True
+    assert rebound_plan.days[0].activities[0].poi is not None
+    assert rebound_plan.days[1].activities[0].poi is not None
+    assert any(item.kind == "activity" for item in rebound_plan.days[0].map_pois)
+    assert any(item.kind == "activity" for item in rebound_plan.days[1].map_pois)
+
+
 def test_hotel_agent_rebinds_daily_stay_around_day_activities() -> None:
     class FakeAdapter:
         async def fetch_hotels_for_locations(
@@ -274,6 +387,95 @@ def test_hotel_agent_rebinds_daily_stay_around_day_activities() -> None:
     assert rebound_plan.days[0].hotel_area == "清源山景区入口"
     assert rebound_hotels[0].name == "清源山脚精品酒店"
     assert execution.success is True
+
+
+def test_hotel_agent_binds_days_in_parallel() -> None:
+    class FakeAdapter:
+        def __init__(self) -> None:
+            self.day1_started = asyncio.Event()
+            self.day2_started = asyncio.Event()
+
+        async def fetch_hotels_for_locations(
+            self,
+            request: TripPlanningRequest,
+            trace: list[ToolCallRecord],
+            location_names: list[str],
+            area_hint: str = "",
+        ):
+            _ = (request, trace, area_hint)
+            first_location = location_names[0] if location_names else ""
+            if first_location == "活动A1":
+                self.day1_started.set()
+                await self.day2_started.wait()
+                return [POIRecommendation(name="A1酒店", address="A1片区")]
+            self.day2_started.set()
+            await self.day1_started.wait()
+            return [POIRecommendation(name="A2酒店", address="A2片区")]
+
+    agent = HotelRecommendationAgent(FakeAdapter())  # type: ignore[arg-type]
+    request = _request(days=2)
+    plan = TravelPlan(
+        title="Plan",
+        summary="Summary",
+        weather_summary="",
+        best_booking_tip="Tip",
+        estimated_budget=BudgetBreakdown(),
+        stay_recommendations=[],
+        city_tips=[],
+        packing_list=[],
+        days=[
+            DayPlan(
+                day_number=1,
+                date="2026-03-20",
+                theme="Day 1",
+                overview="Overview",
+                hotel_area="片区1",
+                stay={"area": "片区1", "hotel_name": "旧酒店1", "reason": "旧推荐"},
+                meals=[],
+                activities=[
+                    Activity(
+                        start_time="09:00",
+                        end_time="11:00",
+                        title="活动A1",
+                        category="sightseeing",
+                        description="desc",
+                        location_name="活动A1",
+                    )
+                ],
+                route_summaries=[],
+            ),
+            DayPlan(
+                day_number=2,
+                date="2026-03-21",
+                theme="Day 2",
+                overview="Overview",
+                hotel_area="片区2",
+                stay={"area": "片区2", "hotel_name": "旧酒店2", "reason": "旧推荐"},
+                meals=[],
+                activities=[
+                    Activity(
+                        start_time="09:00",
+                        end_time="11:00",
+                        title="活动A2",
+                        category="sightseeing",
+                        description="desc",
+                        location_name="活动A2",
+                    )
+                ],
+                route_summaries=[],
+            ),
+        ],
+    )
+    context = PlanningContext(destination="上海", hotels=[])
+
+    rebound_plan, rebound_hotels, execution = asyncio.run(
+        asyncio.wait_for(agent.bind_daily_stays(request, plan, context, []), timeout=1.0)
+    )
+
+    assert execution.success is True
+    assert rebound_plan.days[0].stay.hotel_name == "A1酒店"
+    assert rebound_plan.days[1].stay.hotel_name == "A2酒店"
+    assert [item.name for item in rebound_hotels[:2]] == ["A1酒店", "A2酒店"]
 
 
 def test_meal_agent_rebinds_daily_meals_around_day_activities() -> None:
@@ -348,3 +550,104 @@ def test_meal_agent_rebinds_daily_meals_around_day_activities() -> None:
     ]
     assert rebound_restaurants[0].name == "清源山早餐铺"
     assert execution.success is True
+
+
+def test_meal_agent_binds_days_in_parallel() -> None:
+    from app.agents.meal_agent import MealRecommendationAgent
+
+    class FakeAdapter:
+        def __init__(self) -> None:
+            self.day1_started = asyncio.Event()
+            self.day2_started = asyncio.Event()
+
+        async def fetch_restaurants_for_locations(
+            self,
+            request: TripPlanningRequest,
+            trace: list[ToolCallRecord],
+            location_names: list[str],
+            area_hint: str = "",
+            stay_hint: str = "",
+        ):
+            _ = (request, trace, area_hint, stay_hint)
+            first_location = location_names[0] if location_names else ""
+            if first_location == "活动A1":
+                self.day1_started.set()
+                await self.day2_started.wait()
+                return [
+                    POIRecommendation(name="A1早餐店", tags=["早餐"]),
+                    POIRecommendation(name="A1午餐馆", tags=["餐厅"]),
+                    POIRecommendation(name="A1海鲜馆", tags=["海鲜", "餐厅"]),
+                ]
+            self.day2_started.set()
+            await self.day1_started.wait()
+            return [
+                POIRecommendation(name="A2早餐店", tags=["早餐"]),
+                POIRecommendation(name="A2午餐馆", tags=["餐厅"]),
+                POIRecommendation(name="A2海鲜馆", tags=["海鲜", "餐厅"]),
+            ]
+
+    agent = MealRecommendationAgent(FakeAdapter())  # type: ignore[arg-type]
+    request = _request(days=2)
+    plan = TravelPlan(
+        title="Plan",
+        summary="Summary",
+        weather_summary="",
+        best_booking_tip="Tip",
+        estimated_budget=BudgetBreakdown(),
+        stay_recommendations=[],
+        city_tips=[],
+        packing_list=[],
+        days=[
+            DayPlan(
+                day_number=1,
+                date="2026-03-20",
+                theme="Day 1",
+                overview="Overview",
+                hotel_area="片区1",
+                stay={"area": "片区1", "hotel_name": "酒店1", "reason": "旧推荐"},
+                meals=[MealRecommendation(meal_type="lunch", venue_name="旧午餐1")],
+                activities=[
+                    Activity(
+                        start_time="09:00",
+                        end_time="11:00",
+                        title="活动A1",
+                        category="sightseeing",
+                        description="desc",
+                        location_name="活动A1",
+                    )
+                ],
+                route_summaries=[],
+            ),
+            DayPlan(
+                day_number=2,
+                date="2026-03-21",
+                theme="Day 2",
+                overview="Overview",
+                hotel_area="片区2",
+                stay={"area": "片区2", "hotel_name": "酒店2", "reason": "旧推荐"},
+                meals=[MealRecommendation(meal_type="lunch", venue_name="旧午餐2")],
+                activities=[
+                    Activity(
+                        start_time="09:00",
+                        end_time="11:00",
+                        title="活动A2",
+                        category="sightseeing",
+                        description="desc",
+                        location_name="活动A2",
+                    )
+                ],
+                route_summaries=[],
+            ),
+        ],
+    )
+    context = PlanningContext(destination="上海", restaurants=[])
+
+    rebound_plan, rebound_restaurants, execution = asyncio.run(
+        asyncio.wait_for(agent.bind_daily_meals(request, plan, context, []), timeout=1.0)
+    )
+
+    assert execution.success is True
+    assert rebound_plan.days[0].meals[0].venue_name == "A1早餐店"
+    assert rebound_plan.days[1].meals[0].venue_name == "A2早餐店"
+    assert "A1早餐店" in [item.name for item in rebound_restaurants]
+    assert "A2早餐店" in [item.name for item in rebound_restaurants]

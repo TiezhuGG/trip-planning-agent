@@ -110,3 +110,115 @@ def test_resolve_location_candidate_enriches_top_two_candidates_only() -> None:
     assert resolved is not None
     assert resolved.longitude is not None
     assert resolved.latitude is not None
+
+
+def test_resolve_location_candidate_reuses_simple_cache_across_anchor_variants() -> None:
+    adapter = _adapter()
+    calls = {"search": 0}
+    trace: list[ToolCallRecord] = []
+
+    async def fake_search_poi_candidates(
+        city: str,
+        queries: list[str],
+        trace: list[ToolCallRecord],
+        fallback_kind: str,
+        target_count: int,
+    ) -> list[POIRecommendation]:
+        _ = (city, queries, trace, fallback_kind, target_count)
+        calls["search"] += 1
+        return [
+            POIRecommendation(
+                name="清源山",
+                district="泉州市",
+                tags=["110201"],
+                longitude=118.67,
+                latitude=24.93,
+            )
+        ]
+
+    adapter._search_poi_candidates = fake_search_poi_candidates  # type: ignore[method-assign]
+
+    first = asyncio.run(
+        adapter.resolve_location_candidate(
+            city="泉州",
+            location_name="清源山",
+            trace=trace,
+            anchor_pois=[],
+        )
+    )
+    second = asyncio.run(
+        adapter.resolve_location_candidate(
+            city="泉州",
+            location_name="清源山",
+            trace=trace,
+            anchor_pois=[
+                POIRecommendation(
+                    name="西街",
+                    district="泉州市",
+                    longitude=118.68,
+                    latitude=24.92,
+                )
+            ],
+        )
+    )
+
+    assert calls["search"] == 1
+    assert first is not None
+    assert second is not None
+    assert second.name == "清源山"
+
+
+def test_resolve_location_candidate_skips_simple_cache_when_anchor_out_of_scope() -> None:
+    adapter = _adapter()
+    calls = {"search": 0}
+    trace: list[ToolCallRecord] = []
+
+    async def fake_search_poi_candidates(
+        city: str,
+        queries: list[str],
+        trace: list[ToolCallRecord],
+        fallback_kind: str,
+        target_count: int,
+    ) -> list[POIRecommendation]:
+        _ = (city, queries, trace, fallback_kind, target_count)
+        calls["search"] += 1
+        return [
+            POIRecommendation(
+                name="测试点位",
+                district="泉州市",
+                tags=["110201"],
+                longitude=100.0,
+                latitude=10.0,
+            )
+        ]
+
+    adapter._search_poi_candidates = fake_search_poi_candidates  # type: ignore[method-assign]
+
+    first = asyncio.run(
+        adapter.resolve_location_candidate(
+            city="泉州",
+            location_name="测试点位",
+            trace=trace,
+            anchor_pois=[],
+        )
+    )
+    second = asyncio.run(
+        adapter.resolve_location_candidate(
+            city="泉州",
+            location_name="测试点位",
+            trace=trace,
+            anchor_pois=[
+                POIRecommendation(
+                    name="西街",
+                    district="泉州市",
+                    longitude=118.67,
+                    latitude=24.92,
+                )
+            ],
+        )
+    )
+
+    assert calls["search"] == 2
+    assert first is not None
+    assert second is not None
+    assert second.name == "测试点位"
