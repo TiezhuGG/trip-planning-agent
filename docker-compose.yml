@@ -6,6 +6,7 @@ services:
         PYTHON_IMAGE: ${BACKEND_PYTHON_IMAGE:-python:3.11-slim}
         PIP_INDEX_URL: ${BACKEND_PIP_INDEX_URL:-https://pypi.org/simple}
         PIP_TRUSTED_HOST: ${BACKEND_PIP_TRUSTED_HOST:-}
+        AMAP_MCP_SERVER_VERSION: ${BACKEND_AMAP_MCP_SERVER_VERSION:-0.1.11}
     env_file:
       - ./backend/.env
     environment:

@@ -68,8 +68,61 @@ def _classify_generation_error(exc: Exception) -> tuple[str, str, int]:
         return "VALIDATION_ERROR", "请求参数不合法，请检查目的地和出行信息。", 422
     if "429" in message or "ratelimit" in message or "setlimitexceeded" in message:
         return "LLM_RATE_LIMIT", "大模型服务当前限流，系统暂时无法完成本次规划，请稍后重试。", 503
-    if "mcpprotocolerror" in message:
-        return "MCP_PROTOCOL_ERROR", "地图服务连接异常，暂时无法生成稳定行程。", 503
+    mcp_related_markers = (
+        "mcpprotocolerror",
+        "mcp 工具映射不完整",
+        "missing tools",
+        "高德 web service key",
+        "amap_maps_api_key",
+    )
+    if any(marker in message for marker in mcp_related_markers):
+        return _classify_mcp_error(message)
     if "timeout" in message or "connect" in message or "network" in message:
         return "NETWORK_ERROR", "当前网络或外部服务连接异常，请稍后重试。", 503
     return "INTERNAL_ERROR", "生成旅行计划失败，请稍后重试。", 500
+
+
+def _classify_mcp_error(message: str) -> tuple[str, str, int]:
+    startup_markers = (
+        "mcp command is empty",
+        "mcp 启动命令不存在",
+        "系统找不到指定的文件",
+        "filenotfounderror",
+        "notimplementederror",
+        "windows selector",
+    )
+    mapping_markers = (
+        "工具映射不完整",
+        "缺少工具映射",
+        "missing tools",
+    )
+    key_markers = (
+        "未配置高德 web service key",
+        "缺少高德 web service key",
+        "amap_maps_api_key",
+    )
+    timeout_markers = (
+        "timeout",
+        "timed out",
+        "connect",
+        "connection",
+        "network",
+    )
+    rate_limit_markers = (
+        "cuqps_has_exceeded_the_limit",
+        "rate limit",
+        "too many requests",
+        "429",
+    )
+
+    if any(marker in message for marker in startup_markers):
+        return "MCP_STARTUP_ERROR", "地图服务进程启动失败，请检查 MCP 启动命令与运行环境。", 503
+    if any(marker in message for marker in mapping_markers):
+        return "MCP_TOOL_MAPPING_ERROR", "地图服务工具映射不完整，请检查 MCP 工具配置。", 503
+    if any(marker in message for marker in key_markers):
+        return "AMAP_KEY_MISSING", "地图服务密钥未正确配置，请检查 AMAP_MAPS_API_KEY。", 503
+    if any(marker in message for marker in rate_limit_markers):
+        return "MCP_RATE_LIMIT", "地图服务当前限流，暂时无法生成稳定行程。", 503
+    if any(marker in message for marker in timeout_markers):
+        return "MCP_TIMEOUT", "地图服务连接超时，请稍后重试。", 503
+    return "MCP_PROTOCOL_ERROR", "地图服务连接异常，暂时无法生成稳定行程。", 503
