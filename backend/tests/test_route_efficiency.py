@@ -419,6 +419,58 @@ def test_route_agent_gather_for_plan_uses_final_activity_order() -> None:
     ]
 
 
+def test_route_agent_named_location_resolution_uses_request_cache() -> None:
+    class FakeAdapter:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def resolve_location_candidate(
+            self,
+            city: str,
+            location_name: str,
+            trace: list[ToolCallRecord],
+            anchor_pois: list[POIRecommendation] | None = None,
+        ) -> POIRecommendation | None:
+            _ = (city, trace, anchor_pois)
+            self.calls.append(location_name)
+            return POIRecommendation(
+                name=location_name,
+                address=f"{city}{location_name}",
+                district=city,
+                longitude=120.20,
+                latitude=30.26,
+            )
+
+    adapter = FakeAdapter()
+    agent = RoutePlanningAgent(adapter)  # type: ignore[arg-type]
+    trace: list[ToolCallRecord] = []
+    anchor_points = [POIRecommendation(name="West Lake Hotel", longitude=120.18, latitude=30.24)]
+
+    first = asyncio.run(
+        agent._resolve_named_location(
+            city="杭州",
+            location_name="灵隐寺",
+            known_points=[],
+            trace=trace,
+            anchor_points=anchor_points,
+        )
+    )
+    second = asyncio.run(
+        agent._resolve_named_location(
+            city="杭州",
+            location_name="灵隐寺",
+            known_points=[],
+            trace=trace,
+            anchor_points=anchor_points,
+        )
+    )
+
+    assert first is not None
+    assert second is not None
+    assert first.name == second.name == "灵隐寺"
+    assert adapter.calls == ["灵隐寺"]
+
+
 def test_filter_pois_by_geo_scope_excludes_far_cross_city_candidates() -> None:
     adapter = AmapMCPAdapter(Settings(amap_mcp_command="uvx"))
     pois = [

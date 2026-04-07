@@ -259,6 +259,11 @@ def test_generate_runs_hotel_and_weather_in_parallel() -> None:
     assert result.status == "success"
     assert result.plan.days[0].map_pois
     assert result.plan.days[0].route_segments
+    assert result.meta.stage_timings_ms
+    assert "total" in result.meta.stage_timings_ms
+    assert "compose" in result.meta.stage_timings_ms
+    assert "route_generation" in result.meta.stage_timings_ms
+    assert result.meta.stage_timings_ms["total"] >= 0
 
 
 def test_generate_exposes_fallback_flag_from_agents() -> None:

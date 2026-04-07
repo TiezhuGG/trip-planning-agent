@@ -82,6 +82,7 @@ class TravelAIClient:
         self.secondary_client = None
         self.secondary_model = settings.openai_backup_model
         self.secondary_base_url = self._normalize_base_url(settings.openai_backup_base_url)
+        self._preferred_json_mode_by_model: dict[str, str] = {}
         if settings.has_openai and AsyncOpenAI is not None:
             self.client = self._create_client(
                 api_key=settings.openai_api_key,
@@ -420,11 +421,7 @@ class TravelAIClient:
         )
         warnings: list[str] = []
         last_error: Exception | None = None
-        retry_specs = [
-            (0.35, 8192),
-            (0.15, 9216),
-            (0.0, 10240),
-        ]
+        retry_specs = self._compose_retry_specs()
 
         for attempt, (temperature, max_tokens) in enumerate(retry_specs, start=1):
             payload: dict[str, Any] | None = None
@@ -449,7 +446,8 @@ class TravelAIClient:
                 plan = self._finalize_composed_plan(request=request, context=context, payload=payload)
                 return plan, warnings
             except Exception as exc:
-                if payload is not None and self._is_retryable_compose_error(exc):
+                allow_repair = (not self.settings.openai_fast_mode) or attempt == len(retry_specs)
+                if payload is not None and allow_repair and self._is_retryable_compose_error(exc):
                     repaired_payload = await self._repair_compose_payload(
                         request=request,
                         raw_payload=payload,
@@ -694,9 +692,9 @@ class TravelAIClient:
         }
 
     def _serialize_context_for_llm(self, context: PlanningContext, detail_level: str) -> dict[str, Any]:
-        poi_limit = {"full": 8, "compact": 5, "minimal": 3}[detail_level]
-        route_limit = {"full": 6, "compact": 4, "minimal": 2}[detail_level]
-        step_limit = {"full": 4, "compact": 2, "minimal": 1}[detail_level]
+        poi_limit = {"full": 6, "compact": 4, "minimal": 2}[detail_level]
+        route_limit = {"full": 5, "compact": 3, "minimal": 2}[detail_level]
+        step_limit = {"full": 3, "compact": 2, "minimal": 1}[detail_level]
         return {
             "destination": context.destination,
             "attractions": [self._serialize_poi_for_llm(item) for item in context.attractions[:poi_limit]],
@@ -722,7 +720,7 @@ class TravelAIClient:
         tool_trace: list[ToolCallRecord],
         detail_level: str,
     ) -> list[dict[str, Any]]:
-        limit = {"full": 12, "compact": 8, "minimal": 4}[detail_level]
+        limit = {"full": 10, "compact": 6, "minimal": 3}[detail_level]
         serialized: list[dict[str, Any]] = []
         for item in tool_trace[:limit]:
             serialized.append(
@@ -787,8 +785,8 @@ class TravelAIClient:
             {"role": "user", "content": json.dumps(user_payload, ensure_ascii=True)},
         ]
         errors: list[str] = []
-
-        for mode in ("json_object", "plain_text_json", "minimal"):
+        mode_order = self._request_mode_order(model)
+        for mode in mode_order:
             try:
                 request_kwargs: dict[str, Any] = {
                     "model": model,
@@ -805,12 +803,76 @@ class TravelAIClient:
                 content = self._extract_message_content(completion)
                 payload = extract_json_payload(content)
                 if isinstance(payload, dict):
+                    self._preferred_json_mode_by_model[str(model)] = mode
                     return payload
                 errors.append(f"{mode}: 返回了不可解析的内容")
             except Exception as exc:
                 errors.append(f"{mode}: {self._format_exception(exc)}")
+                if self._is_terminal_request_error(exc):
+                    break
 
         raise ValueError("；".join(errors))
+
+    def _request_mode_order(
+        self,
+        model: str | None,
+    ) -> list[str]:
+        default_modes = ["json_object", "plain_text_json", "minimal"]
+        key = str(model or "")
+        preferred = self._preferred_json_mode_by_model.get(key)
+        if not preferred or preferred not in default_modes:
+            return default_modes
+        return [preferred] + [mode for mode in default_modes if mode != preferred]
+
+    def _is_terminal_request_error(
+        self,
+        exc: Exception,
+    ) -> bool:
+        if self._should_fallback_to_template(exc):
+            return True
+        message = str(exc).lower()
+        terminal_keywords = (
+            "unauthorized",
+            "authentication",
+            "invalid api key",
+            "permission denied",
+            "forbidden",
+            "error code: 401",
+            "error code: 403",
+            "invalid_request_error",
+        )
+        return any(keyword in message for keyword in terminal_keywords)
+
+    def _compose_retry_specs(self) -> list[tuple[float, int]]:
+        if self.settings.openai_fast_mode:
+            return [
+                (0.25, 7168),
+                (0.0, 8192),
+            ]
+        return [
+            (0.35, 8192),
+            (0.15, 9216),
+            (0.0, 10240),
+        ]
+
+    def _seed_retry_specs(self) -> list[tuple[float, int]]:
+        if self.settings.openai_fast_mode:
+            return [
+                (0.3, 2048),
+                (0.1, 3072),
+            ]
+        return [
+            (0.4, 2048),
+            (0.2, 3072),
+            (0.1, 3072),
+            (0.0, 4096),
+            (0.0, 4096),
+        ]
+
+    def _retry_backoff_seconds(self, attempt: int) -> float:
+        if self.settings.openai_fast_mode:
+            return min(0.3, 0.1 * attempt)
+        return min(2.0, 0.4 * attempt)
 
     async def _build_initial_plan_with_provider(
         self,
@@ -818,13 +880,7 @@ class TravelAIClient:
         provider: LLMProvider,
     ) -> tuple[InitialPlanDraft, list[str]]:
         warnings: list[str] = []
-        retry_specs = [
-            (0.4, 2048),
-            (0.2, 3072),
-            (0.1, 3072),
-            (0.0, 4096),
-            (0.0, 4096),
-        ]
+        retry_specs = self._seed_retry_specs()
         last_error: Exception | None = None
         for attempt, (temperature, max_tokens) in enumerate(retry_specs, start=1):
             try:
@@ -845,7 +901,7 @@ class TravelAIClient:
                 if not self._is_retryable_seed_error(exc) or attempt >= len(retry_specs):
                     break
                 warnings.append(f"seed 第 {attempt} 次失败，已重试。原因: {self._format_exception(exc)}")
-                await asyncio.sleep(min(2.0, 0.4 * attempt))
+                await asyncio.sleep(self._retry_backoff_seconds(attempt))
 
         assert last_error is not None
         raise last_error

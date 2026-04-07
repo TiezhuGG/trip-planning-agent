@@ -144,6 +144,79 @@ def test_route_agent_keeps_segment_order_when_planning_in_parallel() -> None:
     assert len(routes) == 4
 
 
+def test_route_agent_plans_days_in_parallel_for_final_plan() -> None:
+    class FakeAdapter:
+        pass
+
+    agent = RoutePlanningAgent(FakeAdapter())  # type: ignore[arg-type]
+    request = _request(days=2)
+    plan = TravelPlan(
+        title="Plan",
+        summary="Summary",
+        weather_summary="",
+        best_booking_tip="Tip",
+        estimated_budget=BudgetBreakdown(),
+        stay_recommendations=[],
+        city_tips=[],
+        packing_list=[],
+        days=[
+            DayPlan(
+                day_number=1,
+                date="2026-03-20",
+                theme="Day 1",
+                overview="Overview",
+                hotel_area="A",
+                meals=[],
+                activities=[],
+                route_summaries=[],
+            ),
+            DayPlan(
+                day_number=2,
+                date="2026-03-21",
+                theme="Day 2",
+                overview="Overview",
+                hotel_area="B",
+                meals=[],
+                activities=[],
+                route_summaries=[],
+            ),
+        ],
+    )
+    context = PlanningContext(destination="涓婃捣")
+
+    day1_started = asyncio.Event()
+    day2_started = asyncio.Event()
+
+    async def fake_plan_routes_for_day(
+        *,
+        request: TripPlanningRequest,
+        day: DayPlan,
+        context: PlanningContext,
+        trace: list[ToolCallRecord],
+    ) -> tuple[list[RouteSummary], bool, str | None]:
+        _ = (request, context, trace)
+        if day.day_number == 1:
+            day1_started.set()
+            await day2_started.wait()
+        else:
+            day2_started.set()
+            await day1_started.wait()
+        return (
+            [RouteSummary(day_number=day.day_number, from_name="A", to_name="B")],
+            False,
+            None,
+        )
+
+    agent._plan_routes_for_day = fake_plan_routes_for_day  # type: ignore[method-assign]
+
+    routes, execution = asyncio.run(
+        asyncio.wait_for(agent.gather_for_plan(request, plan, context, []), timeout=1.0)
+    )
+
+    assert execution.success is True
+    assert [route.day_number for route in routes] == [1, 2]
+
+
 def test_hotel_agent_rebinds_daily_stay_around_day_activities() -> None:
     class FakeAdapter:
         async def fetch_hotels_for_locations(

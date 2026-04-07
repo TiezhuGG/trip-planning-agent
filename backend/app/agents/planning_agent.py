@@ -1,6 +1,7 @@
 ﻿from datetime import datetime
 
 import asyncio
+from time import perf_counter
 
 from app.agents.hotel_agent import HotelRecommendationAgent
 from app.agents.itinerary_composer_agent import ItineraryComposerAgent
@@ -59,9 +60,15 @@ class PlanningCoordinatorAgent:
         agent_trace: list[AgentExecution] = []
         tool_trace = []
         warnings: list[str] = []
+        stage_timings_ms: dict[str, int] = {}
+        total_started = perf_counter()
         async with self.adapter.request_scope():
-            integration_status = await self.adapter.diagnose(force_refresh=False)
-            llm_status = await self.ai_client.diagnose(check_connection=False)
+            diagnose_started = perf_counter()
+            integration_status, llm_status = await asyncio.gather(
+                self.adapter.diagnose(force_refresh=False),
+                self.ai_client.diagnose(check_connection=False),
+            )
+            stage_timings_ms["diagnose"] = self._elapsed_ms(diagnose_started)
             integration_status.llm_enabled = llm_status.enabled
             integration_status.llm_reachable = llm_status.reachable
             integration_status.llm_model = llm_status.model
@@ -76,6 +83,7 @@ class PlanningCoordinatorAgent:
             if integration_status.missing_tools:
                 raise RuntimeError(f"MCP 工具映射不完整: {', '.join(integration_status.missing_tools)}")
 
+            seed_started = perf_counter()
             (
                 initial_plan,
                 seed_trace,
@@ -83,6 +91,7 @@ class PlanningCoordinatorAgent:
                 seed_fallback_used,
                 seed_warnings,
             ) = await self.seed_agent.gather(request)
+            stage_timings_ms["seed"] = self._elapsed_ms(seed_started)
             agent_trace.append(seed_trace)
             warnings.extend(seed_warnings)
 
@@ -94,7 +103,10 @@ class PlanningCoordinatorAgent:
                 routes=[],
                 weather=WeatherSummary(),
             )
+            weather_started = perf_counter()
+            weather_task = asyncio.create_task(self.weather_agent.gather(request, tool_trace))
             poi_tool_trace_start = len(tool_trace)
+            poi_started = perf_counter()
             try:
                 attractions, restaurants = await self.sight_agent.gather(request, tool_trace)
                 context.attractions = attractions[:12]
@@ -123,10 +135,11 @@ class PlanningCoordinatorAgent:
                     used_tools=[integration_status.resolved_tools.get("poi_search", self.adapter.settings.amap_mcp_tool_poi_search)],
                     warnings=[str(exc)],
                 )
+            stage_timings_ms["poi_collection"] = self._elapsed_ms(poi_started)
             agent_trace.append(poi_trace)
 
-            weather_task = asyncio.create_task(self.weather_agent.gather(request, tool_trace))
             hotel_tool_trace_start = len(tool_trace)
+            hotel_started = perf_counter()
             hotel_task = asyncio.create_task(
                 self.hotel_agent.gather(request, context.attractions, tool_trace)
             )
@@ -157,6 +170,7 @@ class PlanningCoordinatorAgent:
                     used_tools=[integration_status.resolved_tools.get("poi_search", self.adapter.settings.amap_mcp_tool_poi_search)],
                     warnings=[str(exc)],
                 )
+            stage_timings_ms["hotel_candidates"] = self._elapsed_ms(hotel_started)
             agent_trace.append(hotel_trace)
 
             try:
@@ -181,8 +195,11 @@ class PlanningCoordinatorAgent:
                     warnings=[str(exc)],
                 )
                 agent_trace.append(weather_trace)
+            stage_timings_ms["weather"] = self._elapsed_ms(weather_started)
 
+            meal_candidates_started = perf_counter()
             day_restaurants = self.meal_agent.gather(request, initial_plan, context.restaurants)
+            stage_timings_ms["meal_candidates"] = self._elapsed_ms(meal_candidates_started)
             meal_candidate_trace = AgentExecution(
                 agent_name="meal_agent",
                 success=True,
@@ -192,51 +209,62 @@ class PlanningCoordinatorAgent:
             )
             agent_trace.append(meal_candidate_trace)
 
+            compose_started = perf_counter()
             plan, compose_trace, compose_llm_used, compose_fallback_used, compose_warnings = await self.composer_agent.gather(
                 request=request,
                 initial_plan=initial_plan,
                 context=context,
                 tool_trace=tool_trace,
             )
+            stage_timings_ms["compose"] = self._elapsed_ms(compose_started)
             agent_trace.append(compose_trace)
             warnings.extend(compose_warnings)
 
+            hotel_binding_started = perf_counter()
             plan, rebound_hotels, hotel_binding_trace = await self.hotel_agent.bind_daily_stays(
                 request=request,
                 plan=plan,
                 context=context,
                 trace=tool_trace,
             )
+            stage_timings_ms["hotel_binding"] = self._elapsed_ms(hotel_binding_started)
             if rebound_hotels:
                 context.hotels = rebound_hotels[:8]
             agent_trace.append(hotel_binding_trace)
             warnings.extend(hotel_binding_trace.warnings)
 
+            meal_binding_started = perf_counter()
             plan, rebound_restaurants, meal_binding_trace = await self.meal_agent.bind_daily_meals(
                 request=request,
                 plan=plan,
                 context=context,
                 trace=tool_trace,
             )
+            stage_timings_ms["meal_binding"] = self._elapsed_ms(meal_binding_started)
             if rebound_restaurants:
                 context.restaurants = rebound_restaurants[:12]
             agent_trace.append(meal_binding_trace)
             warnings.extend(meal_binding_trace.warnings)
 
+            route_generation_started = perf_counter()
             routes, route_trace = await self.route_agent.gather_for_plan(
                 request=request,
                 plan=plan,
                 context=context,
                 trace=tool_trace,
             )
+            stage_timings_ms["route_generation"] = self._elapsed_ms(route_generation_started)
             context.routes = routes
+            route_finalize_started = perf_counter()
             plan = self.ai_client.finalize_plan_with_routes(
                 request=request,
                 plan=plan,
                 context=context,
             )
+            stage_timings_ms["route_finalize"] = self._elapsed_ms(route_finalize_started)
             agent_trace.append(route_trace)
             warnings.extend(route_trace.warnings)
+            truth_binding_started = perf_counter()
             try:
                 plan, truth_trace = await self.route_agent.bind_plan_truth(
                     request=request,
@@ -255,12 +283,14 @@ class PlanningCoordinatorAgent:
                     used_tools=[],
                     warnings=[str(exc)],
                 )
+            stage_timings_ms["truth_binding"] = self._elapsed_ms(truth_binding_started)
             agent_trace.append(truth_trace)
             warnings.extend(truth_trace.warnings)
 
             llm_used = seed_llm_used or compose_llm_used
             fallback_used = seed_fallback_used or compose_fallback_used
             integration_status.llm_reachable = integration_status.llm_reachable or llm_used
+            diagnostics_started = perf_counter()
             diagnostics = self._build_diagnostics(
                 integration_status=integration_status,
                 warnings=warnings,
@@ -280,10 +310,12 @@ class PlanningCoordinatorAgent:
                 truth_trace=truth_trace,
                 plan=plan,
             )
+            stage_timings_ms["diagnostics"] = self._elapsed_ms(diagnostics_started)
             response_status = self._resolve_response_status(
                 fallback_used=fallback_used,
                 diagnostics=diagnostics,
             )
+            stage_timings_ms["total"] = self._elapsed_ms(total_started)
 
             response = PlanningResponse(
                 status=response_status,
@@ -298,6 +330,7 @@ class PlanningCoordinatorAgent:
                     fallback_used=fallback_used,
                     model_name=integration_status.llm_model or self.settings.openai_model,
                     warnings=warnings,
+                    stage_timings_ms=stage_timings_ms,
                 ),
                 diagnostics=diagnostics,
                 map_config=MapRenderConfig(
@@ -312,6 +345,9 @@ class PlanningCoordinatorAgent:
             if include_debug:
                 return response
             return self._compact_response(response)
+
+    def _elapsed_ms(self, started_at: float) -> int:
+        return max(0, int((perf_counter() - started_at) * 1000))
 
     def _compact_response(self, response: PlanningResponse) -> PlanningResponse:
         return response.model_copy(

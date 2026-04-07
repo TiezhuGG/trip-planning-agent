@@ -49,6 +49,8 @@ class AmapMCPAdapter:
         self._poi_detail_concurrency = 2
         self._poi_detail_limit = 4
         self._poi_detail_cache: dict[str, POIRecommendation] = {}
+        self._location_candidate_cache: dict[str, POIRecommendation | None] = {}
+        self._location_candidate_cache_limit = 512
         self._route_location_cache: dict[str, str] = {}
         self._route_location_cache_limit = 512
         self._route_retry_attempts = 3
@@ -61,6 +63,8 @@ class AmapMCPAdapter:
 
     @asynccontextmanager
     async def request_scope(self):
+        # Keep location candidate cache request-scoped to avoid stale cross-request reuse.
+        self._location_candidate_cache.clear()
         if self.client is None or not hasattr(self.client, "session_scope"):
             yield
             return
@@ -314,6 +318,10 @@ class AmapMCPAdapter:
         query = location_name.strip()
         if not query:
             return None
+        anchors = anchor_pois or []
+        cache_key = self._location_candidate_cache_key(city, query, anchors)
+        if cache_key in self._location_candidate_cache:
+            return self._location_candidate_cache[cache_key]
 
         merged = await self._search_poi_candidates(
             city=city,
@@ -322,21 +330,34 @@ class AmapMCPAdapter:
             fallback_kind="地点",
             target_count=5,
         )
-        enriched = await self._enrich_pois_with_details(merged, trace)
         filtered = self._filter_pois_by_geo_scope(
             city=city,
-            pois=enriched,
+            pois=merged,
             radius_km=35,
-            anchor_pois=anchor_pois or [],
+            anchor_pois=anchors,
         )
         if not filtered:
+            self._cache_location_candidate(cache_key, None)
             return None
 
-        ranked = sorted(
+        ranked_base = sorted(
             filtered,
             key=lambda poi: self._location_name_match_score(query, poi),
         )
-        return ranked[0]
+        top_candidates = ranked_base[:2]
+        should_enrich = any(not self._poi_detail_is_complete(item) for item in top_candidates)
+        ranked = ranked_base
+        if should_enrich:
+            enriched_top = await self._enrich_pois_with_details(top_candidates, trace, category="location")
+            if enriched_top:
+                merged_candidates = self._merge_unique_pois([*enriched_top, *ranked_base])
+                ranked = sorted(
+                    merged_candidates,
+                    key=lambda poi: self._location_name_match_score(query, poi),
+                )
+        selected = ranked[0] if ranked else None
+        self._cache_location_candidate(cache_key, selected)
+        return selected
 
     async def fetch_weather(
         self, request: TripPlanningRequest, trace: list[ToolCallRecord]
@@ -1685,6 +1706,35 @@ class AmapMCPAdapter:
             oldest_key = next(iter(self._route_location_cache))
             self._route_location_cache.pop(oldest_key, None)
         self._route_location_cache[key] = location
+
+    def _location_candidate_cache_key(
+        self,
+        city: str,
+        query: str,
+        anchor_pois: list[POIRecommendation],
+    ) -> str:
+        normalized_city = self._normalize_city_name(city)
+        normalized_query = self._normalize_location_token(query)
+        anchor_tokens: list[str] = []
+        for poi in anchor_pois[:3]:
+            token = self._normalize_location_token(poi.name or poi.address or "")
+            if token:
+                anchor_tokens.append(token)
+        anchor_part = "|".join(anchor_tokens)
+        return f"{normalized_city}:{normalized_query}:{anchor_part}"
+
+    def _cache_location_candidate(
+        self,
+        key: str,
+        poi: POIRecommendation | None,
+    ) -> None:
+        if key in self._location_candidate_cache:
+            self._location_candidate_cache[key] = poi
+            return
+        if len(self._location_candidate_cache) >= self._location_candidate_cache_limit:
+            oldest_key = next(iter(self._location_candidate_cache))
+            self._location_candidate_cache.pop(oldest_key, None)
+        self._location_candidate_cache[key] = poi
 
     def _build_hotel_queries(
         self,

@@ -229,6 +229,7 @@ class PlanGenerationMeta(BaseModel):
     fallback_used: bool = False
     model_name: str = ""
     warnings: list[str] = Field(default_factory=list)
+    stage_timings_ms: dict[str, int] = Field(default_factory=dict)
 
 
 class StageDiagnostic(BaseModel):

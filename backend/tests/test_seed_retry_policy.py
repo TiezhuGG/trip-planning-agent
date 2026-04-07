@@ -90,6 +90,33 @@ def test_seed_fails_after_exhausting_retries() -> None:
     assert calls["count"] == 5
 
 
+def test_seed_fast_mode_reduces_retry_attempts() -> None:
+    settings = _settings().model_copy(update={"openai_fast_mode": True})
+    client = TravelAIClient(settings)
+    client.client = object()
+    request = _request(days=3)
+    calls = {"count": 0}
+
+    async def fake_request_json_payload(*args, **kwargs):
+        _ = (args, kwargs)
+        calls["count"] += 1
+        raise ValueError("json_object: timed out")
+
+    client._request_json_payload = fake_request_json_payload  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(client.build_initial_plan(request))
+
+    assert calls["count"] == 2
+
+
+def test_seed_fast_mode_uses_shorter_retry_backoff() -> None:
+    client = TravelAIClient(_settings().model_copy(update={"openai_fast_mode": True}))
+
+    assert client._retry_backoff_seconds(1) == 0.1
+    assert client._retry_backoff_seconds(3) == 0.3
+
+
 def test_seed_falls_back_on_provider_rate_limit() -> None:
     client = TravelAIClient(_settings())
     client.client = object()

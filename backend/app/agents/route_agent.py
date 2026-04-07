@@ -19,7 +19,9 @@ from app.services.amap_mcp_adapter import AmapMCPAdapter
 class RoutePlanningAgent:
     def __init__(self, adapter: AmapMCPAdapter) -> None:
         self.adapter = adapter
-        self._segment_concurrency = 1
+        # Keep low concurrency to balance latency and upstream rate-limit pressure.
+        self._segment_concurrency = 2
+        self._named_location_cache: dict[str, POIRecommendation | None] = {}
 
     async def gather(
         self,
@@ -126,17 +128,29 @@ class RoutePlanningAgent:
         context: PlanningContext,
         trace: list[ToolCallRecord],
     ) -> tuple[list[RouteSummary], AgentExecution]:
+        self._named_location_cache.clear()
         routes: list[RouteSummary] = []
         fallback_days = 0
         warnings: list[str] = []
+        sorted_days = sorted(plan.days, key=lambda item: item.day_number)
+        day_concurrency = min(2, max(1, len(sorted_days)))
+        semaphore = asyncio.Semaphore(day_concurrency)
 
-        for day in sorted(plan.days, key=lambda item: item.day_number):
-            day_routes, day_used_fallback, day_warning = await self._plan_routes_for_day(
-                request=request,
-                day=day,
-                context=context,
-                trace=trace,
-            )
+        async def _plan_day(index: int, day: DayPlan):
+            async with semaphore:
+                day_routes, day_used_fallback, day_warning = await self._plan_routes_for_day(
+                    request=request,
+                    day=day,
+                    context=context,
+                    trace=trace,
+                )
+            return index, day_routes, day_used_fallback, day_warning
+
+        day_results = await asyncio.gather(
+            *[_plan_day(index, day) for index, day in enumerate(sorted_days)]
+        )
+        day_results.sort(key=lambda item: item[0])
+        for _, day_routes, day_used_fallback, day_warning in day_results:
             routes.extend(day_routes)
             if day_used_fallback:
                 fallback_days += 1
@@ -310,6 +324,7 @@ class RoutePlanningAgent:
         context: PlanningContext,
         trace: list[ToolCallRecord],
     ) -> tuple[TravelPlan, AgentExecution]:
+        self._named_location_cache.clear()
         updated_days: list[DayPlan] = []
         warnings: list[str] = []
 
@@ -793,6 +808,13 @@ class RoutePlanningAgent:
         if matched is not None:
             return self._ensure_route_ready_poi(matched, city)
 
+        cache_key = self._named_location_cache_key(city, location_name, anchor_points)
+        if cache_key in self._named_location_cache:
+            cached = self._named_location_cache[cache_key]
+            if cached is None:
+                return None
+            return self._ensure_route_ready_poi(cached, city)
+
         resolver = getattr(self.adapter, "resolve_location_candidate", None)
         if resolver is None:
             return None
@@ -803,9 +825,25 @@ class RoutePlanningAgent:
             trace=trace,
             anchor_pois=anchor_points,
         )
+        self._named_location_cache[cache_key] = resolved
         if resolved is None:
             return None
         return self._ensure_route_ready_poi(resolved, city)
+
+    def _named_location_cache_key(
+        self,
+        city: str,
+        location_name: str,
+        anchor_points: list[POIRecommendation],
+    ) -> str:
+        normalized_city = self._normalize_location_name(city)
+        normalized_location = self._normalize_location_name(location_name)
+        anchor_tokens = [
+            self._normalize_location_name(poi.poi_id or poi.name or "")
+            for poi in anchor_points[:3]
+        ]
+        anchor_key = "|".join(token for token in anchor_tokens if token)
+        return f"{normalized_city}::{normalized_location}::{anchor_key}"
 
     def _match_known_point(
         self,

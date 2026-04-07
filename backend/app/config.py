@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     openai_timeout_seconds: int = 60
     openai_max_retries: int = 1
     openai_trust_env: bool = False
+    openai_fast_mode: bool = False
 
     amap_api_key: str = ""
     amap_security_js_code: str = ""

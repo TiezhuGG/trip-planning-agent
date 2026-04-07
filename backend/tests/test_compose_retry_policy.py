@@ -174,6 +174,28 @@ def test_compose_fails_after_exhausting_retries() -> None:
         asyncio.run(client.compose_plan(request, initial_plan, context, []))
 
 
+def test_compose_fast_mode_reduces_retry_attempts() -> None:
+    settings = Settings(openai_fast_mode=True)
+    client = TravelAIClient(settings)
+    client.client = object()
+    request = _request(days=3)
+    initial_plan = _initial_plan(days=3)
+    context = _context(days=3)
+    calls = {"count": 0}
+
+    async def fake_request_json_payload(*args, **kwargs):
+        _ = (args, kwargs)
+        calls["count"] += 1
+        raise ValueError("json_object: timed out")
+
+    client._request_json_payload = fake_request_json_payload  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(client.compose_plan(request, initial_plan, context, []))
+
+    assert calls["count"] == 2
+
+
 def test_finalize_composed_plan_normalizes_meal_venue_alias() -> None:
     client = TravelAIClient(Settings())
     request = _request(days=2)
