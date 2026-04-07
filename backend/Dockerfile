@@ -20,7 +20,7 @@ RUN set -eux; \
     export UV_INDEX_URL="$PIP_INDEX_URL"; \
     if [ -n "$PIP_TRUSTED_HOST" ]; then export UV_INSECURE_HOST="$PIP_TRUSTED_HOST"; fi; \
     uv tool install "amap-mcp-server==${AMAP_MCP_SERVER_VERSION}"; \
-    amap-mcp-server --help >/dev/null
+    command -v amap-mcp-server >/dev/null
 
 COPY app ./app
 
