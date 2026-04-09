@@ -2,9 +2,13 @@
 import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
 
 import {
+  createTripWorkspace,
   generatePlan,
   getIntegrationStatus,
   getPlanningTelemetry,
+  getTripWorkspaceByShareToken,
+  patchTripWorkspace,
+  replanTripWorkspace,
 } from "./api/planning";
 import AgentTrace from "./components/AgentTrace.vue";
 import AmapMap from "./components/AmapMap.vue";
@@ -14,6 +18,7 @@ import IntegrationPrecheckPanel from "./components/IntegrationPrecheckPanel.vue"
 import NotificationModal from "./components/NotificationModal.vue";
 import PlanningTelemetryPanel from "./components/PlanningTelemetryPanel.vue";
 import PlannerLaunchPanel from "./components/PlannerLaunchPanel.vue";
+import TripWorkspacePanel from "./components/TripWorkspacePanel.vue";
 import TravelTonePanel from "./components/TravelTonePanel.vue";
 import type {
   DailyForecast,
@@ -23,6 +28,7 @@ import type {
   PlanningResponse,
   RouteSummary,
   TripPlanningRequest,
+  TripWorkspace,
   TravelerProfile,
 } from "./types/planning";
 
@@ -94,6 +100,13 @@ const integrationError = ref("");
 const telemetry = ref<PlanningTelemetry>(createEmptyPlanningTelemetry());
 const telemetryLoading = ref(false);
 const telemetryError = ref("");
+const currentTrip = ref<TripWorkspace | null>(null);
+const tripNotes = ref("");
+const tripSaving = ref(false);
+const tripLoading = ref(false);
+const tripReplanning = ref(false);
+const draftSaving = ref(false);
+const replanningDays = ref<number[]>([]);
 const expandedDays = ref<number[]>([]);
 const noticeModal = reactive({
   open: false,
@@ -106,6 +119,12 @@ let progressTimer: number | null = null;
 const currentIntegrationStatus = computed(
   () => result.value?.integration_status ?? integrationStatus.value,
 );
+const shareLink = computed(() =>
+  currentTrip.value
+    ? `${window.location.origin}${window.location.pathname}?trip=${currentTrip.value.share_token}`
+    : "",
+);
+const isEditingWorkspace = computed(() => Boolean(currentTrip.value) && !result.value);
 function resolveDayRoutes(day: {
   route_segments?: RouteSummary[];
   route_summaries?: RouteSummary[];
@@ -190,8 +209,15 @@ watch(
 );
 
 onMounted(() => {
-  if (!showDevPanels) return;
-  void Promise.all([loadIntegrationStatus(), loadPlanningTelemetry()]);
+  const startupTasks: Promise<unknown>[] = [];
+  const shareToken = new URLSearchParams(window.location.search).get("trip");
+  if (shareToken) startupTasks.push(loadSharedTrip(shareToken));
+  if (showDevPanels) {
+    startupTasks.push(loadIntegrationStatus(), loadPlanningTelemetry());
+  }
+  if (startupTasks.length) {
+    void Promise.all(startupTasks);
+  }
 });
 
 function openNotice(
@@ -288,6 +314,266 @@ function createEmptyPlanningTelemetry(): PlanningTelemetry {
     updated_at: null,
     warnings: [],
   };
+}
+
+function applyRequestToForm(request: TripPlanningRequest) {
+  form.origin = request.origin ?? "";
+  form.destination = request.destination;
+  form.start_date = request.start_date;
+  form.days = request.days;
+  form.interests = [...request.interests];
+  form.must_visit = [...request.must_visit];
+  form.pace = request.pace;
+  form.budget_level = request.budget_level;
+  form.transport_preferences = [...request.transport_preferences];
+  form.hotel_style = request.hotel_style;
+  form.dining_preferences = [...request.dining_preferences];
+  form.travelers = { ...request.travelers };
+  form.notes = request.notes ?? "";
+  startDate.value = request.start_date;
+  endDate.value = addDays(request.start_date, request.days - 1);
+  mustVisitText.value = request.must_visit.join("、");
+  diningText.value = request.dining_preferences.join("、");
+}
+
+function syncTripQuery(shareToken?: string | null) {
+  const url = new URL(window.location.href);
+  if (shareToken) url.searchParams.set("trip", shareToken);
+  else url.searchParams.delete("trip");
+  window.history.replaceState({}, "", url.toString());
+}
+
+function applyWorkspace(workspace: TripWorkspace, options: { syncUrl?: boolean } = {}) {
+  currentTrip.value = workspace;
+  tripNotes.value = workspace.manual_notes ?? "";
+  result.value = workspace.response_snapshot ?? null;
+  if (workspace.response_snapshot) {
+    integrationStatus.value = workspace.response_snapshot.integration_status;
+  }
+  applyRequestToForm(workspace.request_brief);
+  if (options.syncUrl !== false) {
+    syncTripQuery(workspace.share_token);
+  }
+}
+
+function updateTripNotes(value: string) {
+  tripNotes.value = value;
+}
+
+async function loadSharedTrip(shareToken: string) {
+  tripLoading.value = true;
+  try {
+    const workspace = await getTripWorkspaceByShareToken(shareToken);
+    applyWorkspace(workspace);
+    openNotice("success", "已载入分享行程", [
+      workspace.response_snapshot
+        ? "当前页面已切换到分享工作区，可继续查看、锁定日期或重规划。"
+        : "当前分享的是一个草稿工作区，你可以继续补充需求后再生成。",
+    ]);
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "读取分享行程失败，请稍后重试。";
+    openNotice("error", "读取分享行程失败", [message]);
+    syncTripQuery(null);
+  } finally {
+    tripLoading.value = false;
+  }
+}
+
+async function persistWorkspaceFromResponse(response: PlanningResponse) {
+  tripSaving.value = true;
+  try {
+    const workspace = await createTripWorkspace({
+      request_brief: response.request_echo,
+      response_snapshot: response,
+      manual_notes: tripNotes.value,
+      locked_day_numbers: currentTrip.value?.locked_day_numbers ?? [],
+      generate_response: true,
+      include_debug: showDevPanels,
+    });
+    applyWorkspace(workspace);
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "保存行程工作区失败，请稍后重试。";
+    openNotice("warning", "结果已生成，但工作区未保存", [message]);
+  } finally {
+    tripSaving.value = false;
+  }
+}
+
+async function saveWorkspacePatch(patch: {
+  manual_notes?: string | null;
+  locked_day_numbers?: number[] | null;
+  request_brief?: TripPlanningRequest | null;
+  generate_response?: boolean;
+}) {
+  if (!currentTrip.value) {
+    openNotice("warning", "工作区尚未就绪", ["请先等待行程结果保存完成。"]);
+    return;
+  }
+  tripSaving.value = true;
+  try {
+    const workspace = await patchTripWorkspace(currentTrip.value.id, {
+      ...patch,
+      include_debug: showDevPanels,
+    });
+    applyWorkspace(workspace, { syncUrl: false });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "更新行程工作区失败，请稍后重试。";
+    openNotice("error", "保存失败", [message]);
+  } finally {
+    tripSaving.value = false;
+  }
+}
+
+async function saveTripNotesAndLocks() {
+  await saveWorkspacePatch({
+    manual_notes: tripNotes.value,
+    locked_day_numbers: currentTrip.value?.locked_day_numbers ?? [],
+  });
+}
+
+async function saveDraft() {
+  const normalizedDestination = form.destination.trim();
+  if (!isChineseCityName(normalizedDestination)) {
+    openNotice("error", "输入有误", [
+      "目的地仅支持中文城市名，例如：上海、北京市。",
+    ]);
+    return;
+  }
+  form.must_visit = splitText(mustVisitText.value);
+  form.dining_preferences = splitText(diningText.value);
+  const requestPayload: TripPlanningRequest = {
+    ...form,
+    origin: form.origin?.trim() || null,
+    destination: normalizedDestination,
+    hotel_style: form.hotel_style || "舒适型酒店",
+    interests: [...form.interests],
+    must_visit: [...form.must_visit],
+    transport_preferences: [...form.transport_preferences],
+    dining_preferences: [...form.dining_preferences],
+    travelers: {
+      adults: Number(form.travelers.adults) || 1,
+      children: Number(form.travelers.children) || 0,
+      seniors: Number(form.travelers.seniors) || 0,
+    },
+  };
+  draftSaving.value = true;
+  try {
+    if (currentTrip.value) {
+      const workspace = await patchTripWorkspace(currentTrip.value.id, {
+        request_brief: requestPayload,
+        manual_notes: tripNotes.value,
+        locked_day_numbers: currentTrip.value.locked_day_numbers,
+        generate_response: false,
+        include_debug: showDevPanels,
+      });
+      applyWorkspace(workspace, { syncUrl: false });
+    } else {
+      const workspace = await createTripWorkspace({
+        request_brief: requestPayload,
+        manual_notes: tripNotes.value,
+        locked_day_numbers: [],
+        generate_response: false,
+        include_debug: showDevPanels,
+      });
+      applyWorkspace(workspace);
+    }
+    openNotice("success", "草稿已保存", [
+      "当前需求已写入工作区，稍后可以继续生成或修改。",
+    ]);
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "保存草稿失败，请稍后重试。";
+    openNotice("error", "草稿保存失败", [message]);
+  } finally {
+    draftSaving.value = false;
+  }
+}
+
+async function copyShareLink() {
+  if (!shareLink.value) {
+    openNotice("warning", "尚无分享链接", ["请先等待工作区保存完成。"]);
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(shareLink.value);
+    openNotice("success", "分享链接已复制", [shareLink.value]);
+  } catch {
+    openNotice("warning", "复制失败", ["当前浏览器不允许直接写入剪贴板。"]);
+  }
+}
+
+async function toggleTripDayLock(dayNumber: number) {
+  if (!currentTrip.value) {
+    openNotice("warning", "工作区尚未就绪", ["请先等待行程结果保存完成。"]);
+    return;
+  }
+  const locked = new Set(currentTrip.value.locked_day_numbers);
+  if (locked.has(dayNumber)) locked.delete(dayNumber);
+  else locked.add(dayNumber);
+  await saveWorkspacePatch({
+    manual_notes: tripNotes.value,
+    locked_day_numbers: [...locked],
+  });
+}
+
+function beginDayReplan(dayNumber: number) {
+  replanningDays.value = [...new Set([...replanningDays.value, dayNumber])];
+}
+
+function endDayReplan(dayNumber: number) {
+  replanningDays.value = replanningDays.value.filter((item) => item !== dayNumber);
+}
+
+async function replanDay(dayNumber: number) {
+  if (!currentTrip.value) {
+    openNotice("warning", "工作区尚未就绪", ["请先等待行程结果保存完成。"]);
+    return;
+  }
+  beginDayReplan(dayNumber);
+  try {
+    const workspace = await replanTripWorkspace(currentTrip.value.id, {
+      scope: "day",
+      day_numbers: [dayNumber],
+      reason: tripNotes.value || null,
+      include_debug: showDevPanels,
+    });
+    applyWorkspace(workspace, { syncUrl: false });
+    openNotice("success", "单日重规划完成", [`第 ${dayNumber} 天已更新。`]);
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "重规划失败，请稍后重试。";
+    openNotice("error", "单日重规划失败", [message]);
+  } finally {
+    endDayReplan(dayNumber);
+  }
+}
+
+async function replanUnlockedDays() {
+  if (!currentTrip.value) {
+    openNotice("warning", "工作区尚未就绪", ["请先等待行程结果保存完成。"]);
+    return;
+  }
+  tripReplanning.value = true;
+  try {
+    const workspace = await replanTripWorkspace(currentTrip.value.id, {
+      scope: "trip",
+      day_numbers: [],
+      preserve_locked_days: true,
+      reason: tripNotes.value || null,
+      include_debug: showDevPanels,
+    });
+    applyWorkspace(workspace, { syncUrl: false });
+    openNotice("success", "整趟重规划完成", ["未锁定日期已刷新。"]);
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "重规划失败，请稍后重试。";
+    openNotice("error", "整趟重规划失败", [message]);
+  } finally {
+    tripReplanning.value = false;
+  }
 }
 
 async function loadIntegrationStatus(refresh = false) {
@@ -401,30 +687,42 @@ async function submitPlan() {
   loading.value = true;
   form.must_visit = splitText(mustVisitText.value);
   form.dining_preferences = splitText(diningText.value);
+  const requestPayload: TripPlanningRequest = {
+    ...form,
+    origin: form.origin?.trim() || null,
+    destination: normalizedDestination,
+    hotel_style: form.hotel_style || "舒适型酒店",
+    interests: [...form.interests],
+    must_visit: [...form.must_visit],
+    transport_preferences: [...form.transport_preferences],
+    dining_preferences: [...form.dining_preferences],
+    travelers: {
+      adults: Number(form.travelers.adults) || 1,
+      children: Number(form.travelers.children) || 0,
+      seniors: Number(form.travelers.seniors) || 0,
+    },
+  };
   startProgress();
   try {
-    result.value = await generatePlan(
-      {
-        ...form,
-        origin: form.origin?.trim() || null,
-        destination: normalizedDestination,
-        hotel_style: form.hotel_style || "舒适型酒店",
-        interests: [...form.interests],
-        must_visit: [...form.must_visit],
-        transport_preferences: [...form.transport_preferences],
-        dining_preferences: [...form.dining_preferences],
-        travelers: {
-          adults: Number(form.travelers.adults) || 1,
-          children: Number(form.travelers.children) || 0,
-          seniors: Number(form.travelers.seniors) || 0,
-        },
-      },
-      { debug: showDevPanels },
-    );
-    integrationStatus.value = result.value.integration_status;
+    if (currentTrip.value) {
+      const workspace = await patchTripWorkspace(currentTrip.value.id, {
+        request_brief: requestPayload,
+        manual_notes: tripNotes.value,
+        locked_day_numbers: currentTrip.value.locked_day_numbers,
+        generate_response: true,
+        include_debug: showDevPanels,
+      });
+      applyWorkspace(workspace, { syncUrl: false });
+    } else {
+      syncTripQuery(null);
+      const response = await generatePlan(requestPayload, { debug: showDevPanels });
+      result.value = response;
+      integrationStatus.value = response.integration_status;
+      await persistWorkspaceFromResponse(response);
+    }
     expandedDays.value = [];
     stopProgress(true);
-    const notices = buildPlanNotices(result.value);
+    const notices = result.value ? buildPlanNotices(result.value) : [];
     if (notices.length) {
       openNotice("warning", "本次规划已完成", notices);
     }
@@ -439,9 +737,21 @@ async function submitPlan() {
     if (showDevPanels) void loadPlanningTelemetry();
   }
 }
+function editCurrentTrip() {
+  result.value = null;
+  replanningDays.value = [];
+  tripReplanning.value = false;
+  expandedDays.value = [];
+}
 function resetPlanner() {
   result.value = null;
+  currentTrip.value = null;
+  tripNotes.value = "";
+  draftSaving.value = false;
+  replanningDays.value = [];
+  tripReplanning.value = false;
   expandedDays.value = [];
+  syncTripQuery(null);
 }
 async function exportAs(type: "png" | "pdf") {
   if (!exportRoot.value || !result.value) return;
@@ -509,6 +819,32 @@ function budgetLabel(value: TripPlanningRequest["budget_level"]) {
         class="flex min-h-[calc(100vh-3rem)] flex-col justify-center gap-8"
       >
         <LandingHero :summary-tags="summaryTags" />
+
+        <article
+          v-if="isEditingWorkspace && currentTrip"
+          class="rounded-[30px] border border-[#d8e3ee] bg-white/92 px-6 py-5 shadow-card"
+        >
+          <div class="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <div class="text-xs uppercase tracking-[0.24em] text-[#6f7f92]">
+                Editing Workspace
+              </div>
+              <div class="mt-2 text-lg font-semibold text-ink">
+                正在编辑当前行程工作区
+              </div>
+              <div class="mt-2 text-sm text-slate-600">
+                继续提交会更新当前 trip，而不是创建新的工作区。当前版本：v{{ currentTrip.version }}
+              </div>
+            </div>
+            <button
+              type="button"
+              class="rounded-full border border-slate-200 bg-white px-5 py-3 text-sm shadow-sm"
+              @click="resetPlanner"
+            >
+              退出并新建规划
+            </button>
+          </div>
+        </article>
 
         <section class="grid gap-6 xl:grid-cols-[1.18fr_0.82fr]">
           <article
@@ -710,9 +1046,11 @@ function budgetLabel(value: TripPlanningRequest["budget_level"]) {
               :progress="progress"
               :progress-label="progressLabel"
               :loading="loading"
+              :saving-draft="draftSaving"
               :can-submit="destinationValid"
               compact
               @submit="submitPlan"
+              @save-draft="saveDraft"
             />
             <IntegrationPrecheckPanel
               v-if="showDevPanels"
@@ -732,13 +1070,22 @@ function budgetLabel(value: TripPlanningRequest["budget_level"]) {
       </section>
       <section v-else ref="exportRoot" class="space-y-6">
         <div class="flex flex-wrap items-center justify-between gap-3">
-          <button
-            type="button"
-            class="rounded-full border border-slate-200 bg-white px-5 py-3 text-sm shadow-card"
-            @click="resetPlanner"
-          >
-            重新规划
-          </button>
+          <div class="flex flex-wrap gap-3">
+            <button
+              type="button"
+              class="rounded-full border border-slate-200 bg-white px-5 py-3 text-sm shadow-card"
+              @click="editCurrentTrip"
+            >
+              修改条件
+            </button>
+            <button
+              type="button"
+              class="rounded-full border border-slate-200 bg-white px-5 py-3 text-sm shadow-card"
+              @click="resetPlanner"
+            >
+              新建规划
+            </button>
+          </div>
           <div class="flex flex-wrap gap-3">
             <button
               type="button"
@@ -819,6 +1166,17 @@ function budgetLabel(value: TripPlanningRequest["budget_level"]) {
             </div>
           </div>
         </article>
+        <TripWorkspacePanel
+          :workspace="currentTrip"
+          :notes="tripNotes"
+          :share-link="shareLink"
+          :saving="tripSaving || tripLoading"
+          :replanning="tripReplanning"
+          @update:notes="updateTripNotes"
+          @save-notes="saveTripNotesAndLocks"
+          @copy-share="copyShareLink"
+          @replan-trip="replanUnlockedDays"
+        />
         <section class="space-y-6">
           <div class="space-y-6">
             <article
@@ -856,7 +1214,11 @@ function budgetLabel(value: TripPlanningRequest["budget_level"]) {
               :routes="itineraryRoutes"
               :weather-forecasts="itineraryWeatherForecasts"
               :expanded-days="expandedDays"
+              :locked-days="currentTrip?.locked_day_numbers ?? []"
+              :replanning-days="replanningDays"
               @toggle="toggleDay"
+              @toggle-lock="toggleTripDayLock"
+              @replan-day="replanDay"
             />
           </div>
         </section>

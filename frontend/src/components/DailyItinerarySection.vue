@@ -7,10 +7,14 @@ const props = defineProps<{
   routes: RouteSummary[];
   weatherForecasts: DailyForecast[];
   expandedDays: number[];
+  lockedDays?: number[];
+  replanningDays?: number[];
 }>();
 
 const emit = defineEmits<{
   (event: "toggle", dayNumber: number): void;
+  (event: "toggle-lock", dayNumber: number): void;
+  (event: "replan-day", dayNumber: number): void;
 }>();
 
 function isDayExpanded(dayNumber: number) {
@@ -38,6 +42,14 @@ function getDayWeather(day: DayPlan): DailyForecast | null {
 
 function getMealRecommendations(day: DayPlan): MealRecommendation[] {
   return day.meals;
+}
+
+function isDayLocked(dayNumber: number) {
+  return props.lockedDays?.includes(dayNumber) ?? false;
+}
+
+function isDayReplanning(dayNumber: number) {
+  return props.replanningDays?.includes(dayNumber) ?? false;
 }
 </script>
 
@@ -67,7 +79,11 @@ function getMealRecommendations(day: DayPlan): MealRecommendation[] {
         :route-summaries="getDayRoutes(day)"
         :weather="getDayWeather(day)"
         :meal-recommendations="getMealRecommendations(day)"
+        :locked="isDayLocked(day.day_number)"
+        :replanning="isDayReplanning(day.day_number)"
         @toggle="toggleDay"
+        @toggle-lock="emit('toggle-lock', $event)"
+        @replan-day="emit('replan-day', $event)"
       />
     </div>
   </article>

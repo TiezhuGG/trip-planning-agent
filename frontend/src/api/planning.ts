@@ -2,7 +2,11 @@ import type {
   IntegrationStatus,
   PlanningTelemetry,
   PlanningResponse,
+  ReplanRequest,
+  TripCreateRequest,
   TripPlanningRequest,
+  TripWorkspace,
+  TripWorkspacePatchRequest,
 } from "../types/planning";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
@@ -77,4 +81,77 @@ export async function generatePlan(
   }
 
   return response.json() as Promise<PlanningResponse>;
+}
+
+export async function createTripWorkspace(
+  payload: TripCreateRequest,
+): Promise<TripWorkspace> {
+  const response = await fetch(`${API_BASE_URL}/api/v1/trips`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    throw new Error(await extractErrorMessage(response, "保存行程工作区失败"));
+  }
+  return response.json() as Promise<TripWorkspace>;
+}
+
+export async function getTripWorkspace(tripId: string): Promise<TripWorkspace> {
+  const response = await fetch(`${API_BASE_URL}/api/v1/trips/${encodeURIComponent(tripId)}`);
+  if (!response.ok) {
+    throw new Error(await extractErrorMessage(response, "获取行程工作区失败"));
+  }
+  return response.json() as Promise<TripWorkspace>;
+}
+
+export async function getTripWorkspaceByShareToken(
+  shareToken: string,
+): Promise<TripWorkspace> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/trips/share/${encodeURIComponent(shareToken)}`,
+  );
+  if (!response.ok) {
+    throw new Error(await extractErrorMessage(response, "获取分享行程失败"));
+  }
+  return response.json() as Promise<TripWorkspace>;
+}
+
+export async function patchTripWorkspace(
+  tripId: string,
+  payload: TripWorkspacePatchRequest,
+): Promise<TripWorkspace> {
+  const response = await fetch(`${API_BASE_URL}/api/v1/trips/${encodeURIComponent(tripId)}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    throw new Error(await extractErrorMessage(response, "更新行程工作区失败"));
+  }
+  return response.json() as Promise<TripWorkspace>;
+}
+
+export async function replanTripWorkspace(
+  tripId: string,
+  payload: ReplanRequest,
+): Promise<TripWorkspace> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/trips/${encodeURIComponent(tripId)}/replan`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(await extractErrorMessage(response, "重规划行程失败"));
+  }
+  return response.json() as Promise<TripWorkspace>;
 }

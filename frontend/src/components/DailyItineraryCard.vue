@@ -12,14 +12,26 @@ const props = defineProps<{
   routeSummaries: RouteSummary[];
   weather: DailyForecast | null;
   mealRecommendations: MealRecommendation[];
+  locked?: boolean;
+  replanning?: boolean;
 }>();
 
 const emit = defineEmits<{
   (event: "toggle", dayNumber: number): void;
+  (event: "toggle-lock", dayNumber: number): void;
+  (event: "replan-day", dayNumber: number): void;
 }>();
 
 function onToggle() {
   emit("toggle", props.day.day_number);
+}
+
+function onToggleLock() {
+  emit("toggle-lock", props.day.day_number);
+}
+
+function onReplanDay() {
+  emit("replan-day", props.day.day_number);
 }
 
 function mealLabel(type: string) {
@@ -66,6 +78,21 @@ function shortAddress(value?: string | null) {
         >
           {{ expanded ? "收起详情" : "展开详情" }}
         </button>
+        <button
+          type="button"
+          class="rounded-full border border-[#c7d6e4] bg-white px-4 py-2 text-sm text-[#35516b] shadow-sm"
+          @click="onToggleLock"
+        >
+          {{ locked ? "解除锁定" : "锁定当天" }}
+        </button>
+        <button
+          type="button"
+          class="rounded-full border border-[#16324d] bg-[#16324d] px-4 py-2 text-sm text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-60"
+          :disabled="replanning"
+          @click="onReplanDay"
+        >
+          {{ replanning ? "重规划中..." : "重排当天" }}
+        </button>
       </div>
     </div>
 
@@ -90,10 +117,7 @@ function shortAddress(value?: string | null) {
                 <div class="mt-2 text-xs text-[#35516b]">
                   {{ activity.poi?.name || activity.location_name }}
                 </div>
-                <div
-                  v-if="activity.poi?.address"
-                  class="mt-1 text-xs text-slate-500"
-                >
+                <div v-if="activity.poi?.address" class="mt-1 text-xs text-slate-500">
                   {{ shortAddress(activity.poi.address) }}
                 </div>
                 <div class="mt-2 leading-6">
@@ -126,10 +150,7 @@ function shortAddress(value?: string | null) {
               <div class="mt-2 text-xs text-slate-500">
                 区域：{{ day.stay.area || day.hotel_area || "待定" }}
               </div>
-              <div
-                v-if="day.stay.poi?.address"
-                class="mt-1 text-xs text-slate-500"
-              >
+              <div v-if="day.stay.poi?.address" class="mt-1 text-xs text-slate-500">
                 地址：{{ shortAddress(day.stay.poi.address) }}
               </div>
               <div class="mt-3 text-xs text-[#2f5a81]">
@@ -181,14 +202,15 @@ function shortAddress(value?: string | null) {
                 <div class="font-medium text-ink">
                   {{ mealLabel(meal.meal_type) }} · {{ meal.venue_name }}
                 </div>
-                <div
-                  v-if="meal.poi?.address"
-                  class="mt-1 text-xs text-slate-500"
-                >
+                <div v-if="meal.poi?.address" class="mt-1 text-xs text-slate-500">
                   {{ shortAddress(meal.poi.address) }}
                 </div>
                 <div class="mt-2 text-xs text-[#2f5a81]">
-                  {{ meal.estimated_cost || formatCny(meal.estimated_cost_cny, "/人") || "费用待确认" }}
+                  {{
+                    meal.estimated_cost ||
+                    formatCny(meal.estimated_cost_cny, "/人") ||
+                    "费用待确认"
+                  }}
                 </div>
               </div>
             </div>

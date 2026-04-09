@@ -305,3 +305,41 @@ export interface PlanningResponse {
   integration_status: IntegrationStatus
   plan: TravelPlan
 }
+
+export interface TripWorkspace {
+  id: string
+  share_token: string
+  status: 'draft' | 'ready'
+  version: number
+  created_at: string
+  updated_at: string
+  request_brief: TripPlanningRequest
+  manual_notes: string
+  locked_day_numbers: number[]
+  response_snapshot: PlanningResponse
+}
+
+export interface TripCreateRequest {
+  request_brief: TripPlanningRequest
+  response_snapshot?: PlanningResponse | null
+  manual_notes?: string
+  locked_day_numbers?: number[]
+  generate_response?: boolean
+  include_debug?: boolean
+}
+
+export interface TripWorkspacePatchRequest {
+  request_brief?: TripPlanningRequest | null
+  manual_notes?: string | null
+  locked_day_numbers?: number[] | null
+  generate_response?: boolean
+  include_debug?: boolean
+}
+
+export interface ReplanRequest {
+  scope: 'trip' | 'day'
+  day_numbers: number[]
+  preserve_locked_days?: boolean
+  reason?: string | null
+  include_debug?: boolean
+}

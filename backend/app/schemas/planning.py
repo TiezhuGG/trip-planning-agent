@@ -315,3 +315,41 @@ class PlanningResponse(BaseModel):
     map_config: MapRenderConfig = Field(default_factory=MapRenderConfig)
     integration_status: IntegrationStatus = Field(default_factory=IntegrationStatus)
     plan: TravelPlan
+
+
+class TripWorkspace(BaseModel):
+    id: str
+    share_token: str
+    status: Literal["draft", "ready"] = "ready"
+    version: int = Field(default=1, ge=1)
+    created_at: datetime
+    updated_at: datetime
+    request_brief: TripPlanningRequest
+    manual_notes: str = ""
+    locked_day_numbers: list[int] = Field(default_factory=list)
+    response_snapshot: PlanningResponse | None = None
+
+
+class TripCreateRequest(BaseModel):
+    request_brief: TripPlanningRequest
+    response_snapshot: PlanningResponse | None = None
+    manual_notes: str = ""
+    locked_day_numbers: list[int] = Field(default_factory=list)
+    generate_response: bool = False
+    include_debug: bool = False
+
+
+class TripWorkspacePatchRequest(BaseModel):
+    request_brief: TripPlanningRequest | None = None
+    manual_notes: str | None = None
+    locked_day_numbers: list[int] | None = None
+    generate_response: bool = False
+    include_debug: bool = False
+
+
+class ReplanRequest(BaseModel):
+    scope: Literal["trip", "day"] = "day"
+    day_numbers: list[int] = Field(default_factory=list)
+    preserve_locked_days: bool = True
+    reason: str | None = None
+    include_debug: bool = False

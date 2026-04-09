@@ -1,0 +1,37 @@
+{
+  "3604b708f28043598b841e887af76a59": {
+    "id": "3604b708f28043598b841e887af76a59",
+    "share_token": "gwUoyE3qOYHZ",
+    "status": "draft",
+    "version": 1,
+    "created_at": "2026-04-09T08:34:46.622244Z",
+    "updated_at": "2026-04-09T08:34:46.622244Z",
+    "request_brief": {
+      "origin": null,
+      "destination": "泉州",
+      "start_date": "2026-04-09",
+      "days": 3,
+      "interests": [
+        "自然风光",
+        "历史文化",
+        "美食探索",
+        "拍照打卡"
+      ],
+      "must_visit": [],
+      "pace": "balanced",
+      "budget_level": "comfort",
+      "transport_preferences": [],
+      "hotel_style": "舒适型酒店",
+      "dining_preferences": [],
+      "travelers": {
+        "adults": 1,
+        "children": 0,
+        "seniors": 0
+      },
+      "notes": ""
+    },
+    "manual_notes": "",
+    "locked_day_numbers": [],
+    "response_snapshot": null
+  }
+}

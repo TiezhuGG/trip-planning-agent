@@ -5,16 +5,19 @@ withDefaults(
     progress: number;
     progressLabel: string;
     loading: boolean;
+    savingDraft?: boolean;
     canSubmit: boolean;
     compact?: boolean;
   }>(),
   {
     compact: false,
+    savingDraft: false,
   },
 );
 
 const emit = defineEmits<{
   (event: "submit"): void;
+  (event: "save-draft"): void;
 }>();
 </script>
 
@@ -65,6 +68,14 @@ const emit = defineEmits<{
           @click="emit('submit')"
         >
           {{ loading ? "规划中..." : "开始规划" }}
+        </button>
+        <button
+          type="button"
+          class="mt-3 w-full rounded-[22px] border border-white/16 bg-transparent px-5 py-4 text-sm font-semibold text-white transition hover:bg-white/10 disabled:cursor-not-allowed disabled:border-white/8 disabled:text-white/40"
+          :disabled="loading || savingDraft || !canSubmit"
+          @click="emit('save-draft')"
+        >
+          {{ savingDraft ? "草稿保存中..." : "先保存为草稿" }}
         </button>
       </div>
     </div>

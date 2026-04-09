@@ -8,9 +8,14 @@ from app.schemas.planning import (
     IntegrationStatus,
     PlanningResponse,
     PlanningTelemetry,
+    ReplanRequest,
+    TripCreateRequest,
     TripPlanningRequest,
+    TripWorkspace,
+    TripWorkspacePatchRequest,
 )
 from app.services.planner import TravelPlannerService
+from app.services.trip_workspace import TripWorkspaceService
 
 router = APIRouter(tags=["planning"])
 
@@ -18,6 +23,11 @@ router = APIRouter(tags=["planning"])
 @lru_cache
 def get_planner_service() -> TravelPlannerService:
     return TravelPlannerService(get_settings())
+
+
+@lru_cache
+def get_trip_workspace_service() -> TripWorkspaceService:
+    return TripWorkspaceService(get_settings(), get_planner_service())
 
 
 @router.get("/plans/integrations/status", response_model=IntegrationStatus)
@@ -61,6 +71,130 @@ async def generate_plan(
             generated_at=datetime.now(timezone.utc),
             include_debug=debug,
         )
+    except Exception as exc:
+        code, message, status_code = _classify_generation_error(exc)
+        raise HTTPException(
+            status_code=status_code,
+            detail={
+                "code": code,
+                "message": message,
+            },
+        ) from exc
+
+
+@router.post("/trips", response_model=TripWorkspace)
+async def create_trip(
+    payload: TripCreateRequest,
+) -> TripWorkspace:
+    try:
+        return await get_trip_workspace_service().create_trip(payload)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "TRIP_CREATE_VALIDATION_ERROR",
+                "message": str(exc),
+            },
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "TRIP_CREATE_ERROR",
+                "message": "保存行程工作区失败，请稍后重试。",
+            },
+        ) from exc
+
+
+@router.get("/trips/{trip_id}", response_model=TripWorkspace)
+async def get_trip(
+    trip_id: str,
+) -> TripWorkspace:
+    try:
+        return await get_trip_workspace_service().get_trip(trip_id)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "TRIP_NOT_FOUND",
+                "message": "未找到对应的行程工作区。",
+            },
+        ) from exc
+
+
+@router.get("/trips/share/{share_token}", response_model=TripWorkspace)
+async def get_trip_by_share_token(
+    share_token: str,
+) -> TripWorkspace:
+    try:
+        return await get_trip_workspace_service().get_trip_by_share_token(share_token)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "TRIP_SHARE_NOT_FOUND",
+                "message": "分享链接已失效或对应行程不存在。",
+            },
+        ) from exc
+
+
+@router.patch("/trips/{trip_id}", response_model=TripWorkspace)
+async def update_trip(
+    trip_id: str,
+    payload: TripWorkspacePatchRequest,
+) -> TripWorkspace:
+    try:
+        return await get_trip_workspace_service().update_trip(trip_id, payload)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "TRIP_NOT_FOUND",
+                "message": "未找到对应的行程工作区。",
+            },
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "TRIP_UPDATE_VALIDATION_ERROR",
+                "message": str(exc),
+            },
+        ) from exc
+    except Exception as exc:
+        code, message, status_code = _classify_generation_error(exc)
+        raise HTTPException(
+            status_code=status_code,
+            detail={
+                "code": code,
+                "message": message,
+            },
+        ) from exc
+
+
+@router.post("/trips/{trip_id}/replan", response_model=TripWorkspace)
+async def replan_trip(
+    trip_id: str,
+    payload: ReplanRequest,
+) -> TripWorkspace:
+    try:
+        return await get_trip_workspace_service().replan_trip(trip_id, payload)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "TRIP_NOT_FOUND",
+                "message": "未找到对应的行程工作区。",
+            },
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "TRIP_REPLAN_VALIDATION_ERROR",
+                "message": str(exc),
+            },
+        ) from exc
     except Exception as exc:
         code, message, status_code = _classify_generation_error(exc)
         raise HTTPException(
