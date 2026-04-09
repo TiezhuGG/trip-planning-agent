@@ -1,5 +1,6 @@
 import type {
   IntegrationStatus,
+  PlanningTelemetry,
   PlanningResponse,
   TripPlanningRequest,
 } from "../types/planning";
@@ -30,12 +31,27 @@ async function extractErrorMessage(
   return text;
 }
 
-export async function getIntegrationStatus(): Promise<IntegrationStatus> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/plans/integrations/status`);
+export async function getIntegrationStatus(
+  options: { refresh?: boolean } = {},
+): Promise<IntegrationStatus> {
+  const params = new URLSearchParams();
+  if (options.refresh) params.set("refresh", "true");
+  const query = params.toString();
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/plans/integrations/status${query ? `?${query}` : ""}`,
+  );
   if (!response.ok) {
     throw new Error(await extractErrorMessage(response, "获取集成状态失败"));
   }
   return response.json() as Promise<IntegrationStatus>;
+}
+
+export async function getPlanningTelemetry(): Promise<PlanningTelemetry> {
+  const response = await fetch(`${API_BASE_URL}/api/v1/plans/telemetry`);
+  if (!response.ok) {
+    throw new Error(await extractErrorMessage(response, "获取性能统计失败"));
+  }
+  return response.json() as Promise<PlanningTelemetry>;
 }
 
 export async function generatePlan(

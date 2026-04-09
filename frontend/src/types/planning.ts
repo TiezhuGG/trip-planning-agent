@@ -218,6 +218,7 @@ export interface PlanGenerationMeta {
   fallback_used: boolean
   model_name: string
   warnings: string[]
+  stage_timings_ms: Record<string, number>
 }
 
 export interface StageDiagnostic {
@@ -261,6 +262,32 @@ export interface IntegrationStatus {
   map_rendering_enabled: boolean
   map_js_key_configured: boolean
   security_js_code_configured: boolean
+  warnings: string[]
+}
+
+export interface StageTimingStats {
+  count: number
+  p50_ms: number
+  p95_ms: number
+  max_ms: number
+  last_ms: number
+  recent_ms: number[]
+  recent_points: StageTimingPoint[]
+}
+
+export interface StageTimingPoint {
+  at: string
+  value_ms: number
+}
+
+export interface PlanningTelemetry {
+  enabled: boolean
+  window_size: number
+  total_requests: number
+  cache_hits: number
+  cache_misses: number
+  stages: Record<string, StageTimingStats>
+  updated_at: string | null
   warnings: string[]
 }
 

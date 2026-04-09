@@ -38,11 +38,11 @@ class PlanningCoordinatorAgent:
         self.weather_agent = WeatherAgent(self.adapter)
         self.hotel_agent = HotelRecommendationAgent(self.adapter)
         self.meal_agent = MealRecommendationAgent(self.adapter)
-        self.route_agent = RoutePlanningAgent(self.adapter)
+        self.route_agent = RoutePlanningAgent(self.adapter, settings)
         self.composer_agent = ItineraryComposerAgent(self.ai_client)
 
-    async def diagnose(self) -> IntegrationStatus:
-        integration_status = await self.adapter.diagnose()
+    async def diagnose(self, force_refresh: bool = False) -> IntegrationStatus:
+        integration_status = await self.adapter.diagnose(force_refresh=force_refresh)
         llm_status = await self.ai_client.diagnose(check_connection=True)
         integration_status.llm_enabled = llm_status.enabled
         integration_status.llm_reachable = llm_status.reachable
@@ -221,12 +221,44 @@ class PlanningCoordinatorAgent:
             warnings.extend(compose_warnings)
 
             hotel_binding_started = perf_counter()
-            plan, rebound_hotels, hotel_binding_trace = await self.hotel_agent.bind_daily_stays(
-                request=request,
-                plan=plan,
-                context=context,
-                trace=tool_trace,
-            )
+            hotel_binding_timeout = self.settings.planner_hotel_binding_timeout_seconds
+            try:
+                plan, rebound_hotels, hotel_binding_trace = await self._await_with_optional_timeout(
+                    self.hotel_agent.bind_daily_stays(
+                        request=request,
+                        plan=plan,
+                        context=context,
+                        trace=tool_trace,
+                    ),
+                    timeout_seconds=hotel_binding_timeout,
+                )
+            except asyncio.TimeoutError:
+                timeout_text = self._format_timeout_seconds(hotel_binding_timeout)
+                timeout_warning = (
+                    f"hotel_binding_agent 调用超时（>{timeout_text}s），已保留现有住宿安排。"
+                )
+                warnings.append(timeout_warning)
+                rebound_hotels = []
+                hotel_binding_trace = AgentExecution(
+                    agent_name="hotel_binding_agent",
+                    success=False,
+                    summary="每日酒店绑定超时，已保留现有住宿安排。",
+                    used_llm=False,
+                    used_tools=[integration_status.resolved_tools.get("poi_search", self.adapter.settings.amap_mcp_tool_poi_search)],
+                    warnings=[timeout_warning],
+                )
+            except Exception as exc:
+                warning = f"hotel_binding_agent 调用失败: {exc}"
+                warnings.append(warning)
+                rebound_hotels = []
+                hotel_binding_trace = AgentExecution(
+                    agent_name="hotel_binding_agent",
+                    success=False,
+                    summary="每日酒店绑定失败，已保留现有住宿安排。",
+                    used_llm=False,
+                    used_tools=[integration_status.resolved_tools.get("poi_search", self.adapter.settings.amap_mcp_tool_poi_search)],
+                    warnings=[str(exc)],
+                )
             stage_timings_ms["hotel_binding"] = self._elapsed_ms(hotel_binding_started)
             if rebound_hotels:
                 context.hotels = rebound_hotels[:8]
@@ -234,12 +266,44 @@ class PlanningCoordinatorAgent:
             warnings.extend(hotel_binding_trace.warnings)
 
             meal_binding_started = perf_counter()
-            plan, rebound_restaurants, meal_binding_trace = await self.meal_agent.bind_daily_meals(
-                request=request,
-                plan=plan,
-                context=context,
-                trace=tool_trace,
-            )
+            meal_binding_timeout = self.settings.planner_meal_binding_timeout_seconds
+            try:
+                plan, rebound_restaurants, meal_binding_trace = await self._await_with_optional_timeout(
+                    self.meal_agent.bind_daily_meals(
+                        request=request,
+                        plan=plan,
+                        context=context,
+                        trace=tool_trace,
+                    ),
+                    timeout_seconds=meal_binding_timeout,
+                )
+            except asyncio.TimeoutError:
+                timeout_text = self._format_timeout_seconds(meal_binding_timeout)
+                timeout_warning = (
+                    f"meal_binding_agent 调用超时（>{timeout_text}s），已保留现有餐饮安排。"
+                )
+                warnings.append(timeout_warning)
+                rebound_restaurants = []
+                meal_binding_trace = AgentExecution(
+                    agent_name="meal_binding_agent",
+                    success=False,
+                    summary="每日餐饮绑定超时，已保留现有餐饮安排。",
+                    used_llm=False,
+                    used_tools=[integration_status.resolved_tools.get("poi_search", self.adapter.settings.amap_mcp_tool_poi_search)],
+                    warnings=[timeout_warning],
+                )
+            except Exception as exc:
+                warning = f"meal_binding_agent 调用失败: {exc}"
+                warnings.append(warning)
+                rebound_restaurants = []
+                meal_binding_trace = AgentExecution(
+                    agent_name="meal_binding_agent",
+                    success=False,
+                    summary="每日餐饮绑定失败，已保留现有餐饮安排。",
+                    used_llm=False,
+                    used_tools=[integration_status.resolved_tools.get("poi_search", self.adapter.settings.amap_mcp_tool_poi_search)],
+                    warnings=[str(exc)],
+                )
             stage_timings_ms["meal_binding"] = self._elapsed_ms(meal_binding_started)
             if rebound_restaurants:
                 context.restaurants = rebound_restaurants[:12]
@@ -247,30 +311,87 @@ class PlanningCoordinatorAgent:
             warnings.extend(meal_binding_trace.warnings)
 
             route_generation_started = perf_counter()
-            routes, route_trace = await self.route_agent.gather_for_plan(
-                request=request,
-                plan=plan,
-                context=context,
-                trace=tool_trace,
-            )
+            route_generation_timeout = self.settings.planner_route_generation_timeout_seconds
+            routes = []
+            try:
+                routes, route_trace = await self._await_with_optional_timeout(
+                    self.route_agent.gather_for_plan(
+                        request=request,
+                        plan=plan,
+                        context=context,
+                        trace=tool_trace,
+                    ),
+                    timeout_seconds=route_generation_timeout,
+                )
+            except asyncio.TimeoutError:
+                timeout_text = self._format_timeout_seconds(route_generation_timeout)
+                timeout_warning = f"route_agent 调用超时（>{timeout_text}s），已保留原始行程动线信息。"
+                warnings.append(timeout_warning)
+                route_trace = AgentExecution(
+                    agent_name="route_agent",
+                    success=False,
+                    summary="路线生成超时，已保留原始行程动线信息。",
+                    used_llm=False,
+                    used_tools=[integration_status.resolved_tools.get("route_plan", self.adapter.settings.amap_mcp_tool_route_plan)],
+                    warnings=[timeout_warning],
+                )
+            except Exception as exc:
+                warning = f"route_agent 调用失败: {exc}"
+                warnings.append(warning)
+                route_trace = AgentExecution(
+                    agent_name="route_agent",
+                    success=False,
+                    summary="路线生成失败，已保留原始行程动线信息。",
+                    used_llm=False,
+                    used_tools=[integration_status.resolved_tools.get("route_plan", self.adapter.settings.amap_mcp_tool_route_plan)],
+                    warnings=[str(exc)],
+                )
             stage_timings_ms["route_generation"] = self._elapsed_ms(route_generation_started)
             context.routes = routes
             route_finalize_started = perf_counter()
-            plan = self.ai_client.finalize_plan_with_routes(
-                request=request,
-                plan=plan,
-                context=context,
-            )
+            if context.routes:
+                try:
+                    plan = self.ai_client.finalize_plan_with_routes(
+                        request=request,
+                        plan=plan,
+                        context=context,
+                    )
+                except Exception as exc:
+                    warning = f"route_finalize 处理失败: {exc}"
+                    warnings.append(warning)
+                    route_trace = route_trace.model_copy(
+                        update={
+                            "success": False,
+                            "summary": "路线结果整合失败，已保留基础行程结果。",
+                            "warnings": list(dict.fromkeys([*route_trace.warnings, str(exc)])),
+                        }
+                    )
             stage_timings_ms["route_finalize"] = self._elapsed_ms(route_finalize_started)
             agent_trace.append(route_trace)
             warnings.extend(route_trace.warnings)
             truth_binding_started = perf_counter()
+            truth_binding_timeout = self.settings.planner_truth_binding_timeout_seconds
             try:
-                plan, truth_trace = await self.route_agent.bind_plan_truth(
-                    request=request,
-                    plan=plan,
-                    context=context,
-                    trace=tool_trace,
+                plan, truth_trace = await self._await_with_optional_timeout(
+                    self.route_agent.bind_plan_truth(
+                        request=request,
+                        plan=plan,
+                        context=context,
+                        trace=tool_trace,
+                    ),
+                    timeout_seconds=truth_binding_timeout,
+                )
+            except asyncio.TimeoutError:
+                timeout_text = self._format_timeout_seconds(truth_binding_timeout)
+                timeout_warning = f"plan_truth_agent 调用超时（>{timeout_text}s），已保留基础行程结果。"
+                warnings.append(timeout_warning)
+                truth_trace = AgentExecution(
+                    agent_name="plan_truth_agent",
+                    success=False,
+                    summary="最终点位校正超时，已保留基础行程结果继续返回。",
+                    used_llm=False,
+                    used_tools=[],
+                    warnings=[timeout_warning],
                 )
             except Exception as exc:
                 warning = f"plan_truth_agent 调用失败: {exc}"
@@ -345,6 +466,17 @@ class PlanningCoordinatorAgent:
             if include_debug:
                 return response
             return self._compact_response(response)
+
+    async def _await_with_optional_timeout(self, awaitable, timeout_seconds: float) -> object:
+        if timeout_seconds and timeout_seconds > 0:
+            return await asyncio.wait_for(awaitable, timeout=float(timeout_seconds))
+        return await awaitable
+
+    def _format_timeout_seconds(self, timeout_seconds: float) -> str:
+        seconds = float(timeout_seconds)
+        if seconds.is_integer():
+            return str(int(seconds))
+        return f"{seconds:.1f}".rstrip("0").rstrip(".")
 
     def _elapsed_ms(self, started_at: float) -> int:
         return max(0, int((perf_counter() - started_at) * 1000))

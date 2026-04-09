@@ -4,7 +4,12 @@ from functools import lru_cache
 from fastapi import APIRouter, HTTPException, Query
 
 from app.config import get_settings
-from app.schemas.planning import IntegrationStatus, PlanningResponse, TripPlanningRequest
+from app.schemas.planning import (
+    IntegrationStatus,
+    PlanningResponse,
+    PlanningTelemetry,
+    TripPlanningRequest,
+)
 from app.services.planner import TravelPlannerService
 
 router = APIRouter(tags=["planning"])
@@ -16,15 +21,31 @@ def get_planner_service() -> TravelPlannerService:
 
 
 @router.get("/plans/integrations/status", response_model=IntegrationStatus)
-async def get_integration_status() -> IntegrationStatus:
+async def get_integration_status(
+    refresh: bool = Query(default=False),
+) -> IntegrationStatus:
     try:
-        return await get_planner_service().diagnose_integrations()
+        return await get_planner_service().diagnose_integrations(refresh=refresh)
     except Exception as exc:
         raise HTTPException(
             status_code=500,
             detail={
                 "code": "INTEGRATION_STATUS_ERROR",
                 "message": "集成状态检查失败，请稍后重试。",
+            },
+        ) from exc
+
+
+@router.get("/plans/telemetry", response_model=PlanningTelemetry)
+async def get_planning_telemetry() -> PlanningTelemetry:
+    try:
+        return await get_planner_service().get_telemetry()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "PLANNING_TELEMETRY_ERROR",
+                "message": "性能统计读取失败，请稍后重试。",
             },
         ) from exc
 

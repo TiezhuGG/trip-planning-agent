@@ -276,6 +276,32 @@ class IntegrationStatus(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class StageTimingPoint(BaseModel):
+    at: datetime
+    value_ms: int = 0
+
+
+class StageTimingStats(BaseModel):
+    count: int = 0
+    p50_ms: int = 0
+    p95_ms: int = 0
+    max_ms: int = 0
+    last_ms: int = 0
+    recent_ms: list[int] = Field(default_factory=list)
+    recent_points: list[StageTimingPoint] = Field(default_factory=list)
+
+
+class PlanningTelemetry(BaseModel):
+    enabled: bool = False
+    window_size: int = 0
+    total_requests: int = 0
+    cache_hits: int = 0
+    cache_misses: int = 0
+    stages: dict[str, StageTimingStats] = Field(default_factory=dict)
+    updated_at: datetime | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
 class PlanningResponse(BaseModel):
     status: Literal["success", "partial_success", "fallback_success"] = "success"
     generated_at: datetime

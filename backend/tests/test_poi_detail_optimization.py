@@ -188,3 +188,129 @@ def test_search_poi_candidates_returns_partial_results_on_rate_limit() -> None:
     )
 
     assert [item.name for item in result] == ["外滩"]
+
+
+def test_search_poi_candidates_caps_query_attempts_on_empty_results() -> None:
+    adapter = AmapMCPAdapter(Settings(amap_mcp_command="uvx"))
+    adapter.client = object()
+    adapter._tool_catalog = [{"name": "maps_text_search"}]
+    trace: list[ToolCallRecord] = []
+    calls = {"count": 0}
+
+    async def fake_call_tool(
+        purpose: str,
+        arguments: dict,
+        trace: list[ToolCallRecord],
+        tool_name_override: str | None = None,
+    ):
+        _ = (purpose, trace, tool_name_override)
+        calls["count"] += 1
+        return {"pois": []}
+
+    adapter._call_tool_for_purpose = fake_call_tool  # type: ignore[method-assign]
+    queries = [f"query-{idx}" for idx in range(20)]
+
+    result = asyncio.run(
+        adapter._search_poi_candidates(
+            city="上海",
+            queries=queries,
+            trace=trace,
+            fallback_kind="景点",
+            target_count=10,
+        )
+    )
+
+    assert result == []
+    # query budget for target_count=10 is capped at 12, and empty-stop halves each pass -> 6 + 6 calls.
+    assert calls["count"] == 12
+
+
+def test_search_poi_candidates_adaptive_budget_reduces_attempts_on_poor_history() -> None:
+    adapter = AmapMCPAdapter(
+        Settings(
+            amap_mcp_command="uvx",
+            amap_mcp_adaptive_retry_enabled=True,
+            amap_mcp_adaptive_retry_window=6,
+            amap_mcp_adaptive_retry_min_samples=4,
+            amap_mcp_adaptive_retry_low_success_rate=0.5,
+        )
+    )
+    adapter.client = object()
+    adapter._tool_catalog = [{"name": "maps_text_search"}]
+    trace: list[ToolCallRecord] = []
+    calls = {"count": 0}
+
+    for _ in range(4):
+        asyncio.run(adapter._record_adaptive_retry_result("poi_search", success=False))
+
+    async def fake_call_tool(
+        purpose: str,
+        arguments: dict,
+        trace: list[ToolCallRecord],
+        tool_name_override: str | None = None,
+    ):
+        _ = (purpose, arguments, trace, tool_name_override)
+        calls["count"] += 1
+        return {"pois": []}
+
+    adapter._call_tool_for_purpose = fake_call_tool  # type: ignore[method-assign]
+    queries = [f"query-{idx}" for idx in range(20)]
+
+    result = asyncio.run(
+        adapter._search_poi_candidates(
+            city="上海",
+            queries=queries,
+            trace=trace,
+            fallback_kind="景点",
+            target_count=10,
+        )
+    )
+
+    assert result == []
+    assert calls["count"] == 3
+
+
+def test_search_poi_candidates_adaptive_budget_keeps_base_when_history_healthy() -> None:
+    adapter = AmapMCPAdapter(
+        Settings(
+            amap_mcp_command="uvx",
+            amap_mcp_adaptive_retry_enabled=True,
+            amap_mcp_adaptive_retry_window=8,
+            amap_mcp_adaptive_retry_min_samples=4,
+            amap_mcp_adaptive_retry_low_success_rate=0.5,
+        )
+    )
+    adapter.client = object()
+    adapter._tool_catalog = [{"name": "maps_text_search"}]
+    trace: list[ToolCallRecord] = []
+    calls = {"count": 0}
+
+    for _ in range(6):
+        asyncio.run(adapter._record_adaptive_retry_result("poi_search", success=True))
+
+    async def fake_call_tool(
+        purpose: str,
+        arguments: dict,
+        trace: list[ToolCallRecord],
+        tool_name_override: str | None = None,
+    ):
+        _ = (purpose, arguments, trace, tool_name_override)
+        calls["count"] += 1
+        return {"pois": []}
+
+    adapter._call_tool_for_purpose = fake_call_tool  # type: ignore[method-assign]
+    queries = [f"query-{idx}" for idx in range(20)]
+
+    result = asyncio.run(
+        adapter._search_poi_candidates(
+            city="上海",
+            queries=queries,
+            trace=trace,
+            fallback_kind="景点",
+            target_count=10,
+        )
+    )
+
+    assert result == []
+    # Healthy history keeps default budget behavior: 12 attempts (6 for citylimit=true + 6 for false).
+    assert calls["count"] == 12

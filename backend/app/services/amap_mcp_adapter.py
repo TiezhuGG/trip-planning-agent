@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import asyncio
+from collections import deque
 import math
 import re
 import time
@@ -44,7 +45,8 @@ class AmapMCPAdapter:
         )
         self._tool_catalog: list[dict[str, Any]] | None = None
         self._tool_catalog_cached_at: float = 0.0
-        self._tool_catalog_ttl_seconds = 60.0
+        self._tool_catalog_ttl_seconds = max(0.0, float(settings.amap_mcp_tool_catalog_cache_seconds))
+        self._tool_catalog_lock = asyncio.Lock()
         self._resolved_tools: dict[str, str] = {}
         self._poi_detail_concurrency = 2
         self._poi_detail_limit = 4
@@ -57,6 +59,17 @@ class AmapMCPAdapter:
         self._route_retry_attempts = 3
         self._route_retry_base_delay_seconds = 0.6
         self._geocode_retry_attempts = 3
+        self._poi_query_budget_floor = 8
+        self._poi_query_budget_cap = 12
+        self._poi_search_consecutive_empty_stop = 3
+        self._tool_circuit_state: dict[str, dict[str, Any]] = {}
+        self._tool_circuit_lock = asyncio.Lock()
+        self._adaptive_retry_stats: dict[str, dict[str, Any]] = {}
+        self._adaptive_retry_lock = asyncio.Lock()
+        self._diagnose_cache_ttl_seconds = max(0.0, float(settings.amap_mcp_diagnose_cache_seconds))
+        self._diagnose_cached_at: float = 0.0
+        self._diagnose_cached_status: IntegrationStatus | None = None
+        self._diagnose_lock = asyncio.Lock()
 
     @property
     def has_client(self) -> bool:
@@ -74,54 +87,79 @@ class AmapMCPAdapter:
             yield
 
     async def diagnose(self, force_refresh: bool = True) -> IntegrationStatus:
-        warnings: list[str] = []
-        available_tools: list[str] = []
-        resolved_tools: dict[str, str] = {}
-        missing_tools: list[str] = []
-        mcp_connected = False
+        now = time.monotonic()
+        if (
+            not force_refresh
+            and self._diagnose_cache_ttl_seconds > 0
+            and self._diagnose_cached_status is not None
+            and (now - self._diagnose_cached_at) <= self._diagnose_cache_ttl_seconds
+        ):
+            return self._diagnose_cached_status.model_copy(deep=True)
 
-        if self.client is not None:
-            try:
-                catalog = await asyncio.wait_for(
-                    self._ensure_tool_catalog(force_refresh=force_refresh),
-                    timeout=self.settings.amap_mcp_timeout_seconds + 2,
-                )
-                available_tools = [item.get("name", "") for item in catalog if item.get("name")]
-                mcp_connected = True
-                resolved_tools = {
-                    purpose: self._resolve_tool_name(purpose, strict=False) or ""
-                    for purpose in ("poi_search", "route_plan", "weather")
-                }
-                resolved_tools = {key: value for key, value in resolved_tools.items() if value}
-                missing_tools = [
-                    purpose
-                    for purpose in ("poi_search", "route_plan", "weather")
-                    if purpose not in resolved_tools
-                ]
-                if missing_tools:
-                    warnings.append(
-                        f"MCP 已连接，但仍缺少工具映射: {', '.join(missing_tools)}。"
+        async with self._diagnose_lock:
+            now = time.monotonic()
+            if (
+                not force_refresh
+                and self._diagnose_cache_ttl_seconds > 0
+                and self._diagnose_cached_status is not None
+                and (now - self._diagnose_cached_at) <= self._diagnose_cache_ttl_seconds
+            ):
+                return self._diagnose_cached_status.model_copy(deep=True)
+
+            warnings: list[str] = []
+            available_tools: list[str] = []
+            resolved_tools: dict[str, str] = {}
+            missing_tools: list[str] = []
+            mcp_connected = False
+
+            if self.client is not None:
+                try:
+                    catalog = await asyncio.wait_for(
+                        self._ensure_tool_catalog(force_refresh=force_refresh),
+                        timeout=self.settings.amap_mcp_timeout_seconds + 2,
                     )
-            except Exception as exc:
-                warnings.append(self._format_connection_error(exc))
-        else:
-            warnings.append("未配置 MCP 启动命令，规划请求会直接失败。")
+                    available_tools = [item.get("name", "") for item in catalog if item.get("name")]
+                    mcp_connected = True
+                    resolved_tools = {
+                        purpose: self._resolve_tool_name(purpose, strict=False) or ""
+                        for purpose in ("poi_search", "route_plan", "weather")
+                    }
+                    resolved_tools = {key: value for key, value in resolved_tools.items() if value}
+                    missing_tools = [
+                        purpose
+                        for purpose in ("poi_search", "route_plan", "weather")
+                        if purpose not in resolved_tools
+                    ]
+                    if missing_tools:
+                        warnings.append(
+                            f"MCP 已连接，但仍缺少工具映射: {', '.join(missing_tools)}。"
+                        )
+                except Exception as exc:
+                    warnings.append(self._format_connection_error(exc))
+            else:
+                warnings.append("未配置 MCP 启动命令，规划请求会直接失败。")
 
-        if self.settings.amap_api_key and not self.settings.amap_security_js_code:
-            warnings.append("已配置高德 JS Key，但未配置安全密钥；如果控制台开启了安全校验，前端地图会加载失败。")
+            if self.settings.amap_api_key and not self.settings.amap_security_js_code:
+                warnings.append("已配置高德 JS Key，但未配置安全密钥；如果控制台开启了安全校验，前端地图会加载失败。")
+            warnings.extend(await self._tool_circuit_warning_messages())
+            warnings = list(dict.fromkeys(item for item in warnings if item))
 
-        return IntegrationStatus(
-            mcp_enabled=self.settings.has_mcp,
-            mcp_connected=mcp_connected,
-            mcp_command=self.settings.amap_mcp_command,
-            available_tools=available_tools,
-            resolved_tools=resolved_tools,
-            missing_tools=missing_tools,
-            map_rendering_enabled=self.settings.has_map_rendering,
-            map_js_key_configured=bool(self.settings.amap_api_key),
-            security_js_code_configured=bool(self.settings.amap_security_js_code),
-            warnings=warnings,
-        )
+            status = IntegrationStatus(
+                mcp_enabled=self.settings.has_mcp,
+                mcp_connected=mcp_connected,
+                mcp_command=self.settings.amap_mcp_command,
+                available_tools=available_tools,
+                resolved_tools=resolved_tools,
+                missing_tools=missing_tools,
+                map_rendering_enabled=self.settings.has_map_rendering,
+                map_js_key_configured=bool(self.settings.amap_api_key),
+                security_js_code_configured=bool(self.settings.amap_security_js_code),
+                warnings=warnings,
+            )
+            if self._diagnose_cache_ttl_seconds > 0:
+                self._diagnose_cached_status = status.model_copy(deep=True)
+                self._diagnose_cached_at = now
+            return status
 
     async def fetch_attractions(
         self, request: TripPlanningRequest, trace: list[ToolCallRecord]
@@ -635,21 +673,29 @@ class AmapMCPAdapter:
         arguments: dict[str, Any],
         trace: list[ToolCallRecord],
     ) -> Any:
+        retry_budget = await self._adaptive_retry_budget(
+            channel="route_tool",
+            base_attempts=self._route_retry_attempts,
+        )
         last_exc: Exception | None = None
-        for attempt in range(self._route_retry_attempts):
+        for attempt in range(retry_budget):
             try:
-                return await self._call_tool_for_purpose(
+                result = await self._call_tool_for_purpose(
                     "route_plan",
                     arguments,
                     trace,
                     tool_name_override=tool_name,
                 )
+                await self._record_adaptive_retry_result("route_tool", success=True)
+                return result
             except Exception as exc:
                 last_exc = exc
-                if attempt >= self._route_retry_attempts - 1 or not self._is_rate_limit_error(exc):
+                if attempt >= retry_budget - 1 or not self._is_rate_limit_error(exc):
+                    await self._record_adaptive_retry_result("route_tool", success=False)
                     raise
                 await asyncio.sleep(self._retry_delay_seconds(attempt))
         if last_exc is not None:
+            await self._record_adaptive_retry_result("route_tool", success=False)
             raise last_exc
         raise MCPProtocolError(f"路线工具调用失败: {tool_name}")
 
@@ -661,21 +707,142 @@ class AmapMCPAdapter:
         waypoints: list[POIRecommendation],
         trace: list[ToolCallRecord],
     ) -> dict[str, Any]:
+        channel = f"route_webservice::{mode}"
+        retry_budget = await self._adaptive_retry_budget(
+            channel=channel,
+            base_attempts=self._route_retry_attempts,
+        )
         last_exc: Exception | None = None
-        for attempt in range(self._route_retry_attempts):
+        for attempt in range(retry_budget):
             try:
-                return await self._plan_route_via_web_service(mode, origin, destination, waypoints, trace)
+                result = await self._plan_route_via_web_service(mode, origin, destination, waypoints, trace)
+                await self._record_adaptive_retry_result(channel, success=True)
+                return result
             except Exception as exc:
                 last_exc = exc
-                if attempt >= self._route_retry_attempts - 1 or not self._is_rate_limit_error(exc):
+                if attempt >= retry_budget - 1 or not self._is_rate_limit_error(exc):
+                    await self._record_adaptive_retry_result(channel, success=False)
                     raise
                 await asyncio.sleep(self._retry_delay_seconds(attempt))
         if last_exc is not None:
+            await self._record_adaptive_retry_result(channel, success=False)
             raise last_exc
         raise MCPProtocolError(f"高德路线 Web Service 调用失败: {mode}")
 
     def _retry_delay_seconds(self, attempt: int) -> float:
         return self._route_retry_base_delay_seconds * (attempt + 1)
+
+    async def _adaptive_retry_budget(self, channel: str, base_attempts: int) -> int:
+        base = max(1, int(base_attempts))
+        if not self._adaptive_retry_enabled():
+            return base
+
+        window = max(1, int(self.settings.amap_mcp_adaptive_retry_window))
+        min_samples = max(1, int(self.settings.amap_mcp_adaptive_retry_min_samples))
+        low_success_rate = float(self.settings.amap_mcp_adaptive_retry_low_success_rate)
+        async with self._adaptive_retry_lock:
+            state = self._adaptive_retry_state_item(channel, window)
+            recent = state["recent"]
+            samples = len(recent)
+            if samples < min_samples:
+                return base
+            success_rate = (sum(recent) / samples) if samples else 1.0
+            consecutive_failures = int(state.get("consecutive_failures", 0))
+            if consecutive_failures >= 3:
+                return 1
+            if success_rate <= max(0.01, low_success_rate / 2):
+                return max(1, base - 2)
+            if success_rate <= max(0.01, low_success_rate):
+                return max(1, base - 1)
+            return base
+
+    async def _record_adaptive_retry_result(self, channel: str, success: bool) -> None:
+        if not self._adaptive_retry_enabled():
+            return
+        window = max(1, int(self.settings.amap_mcp_adaptive_retry_window))
+        async with self._adaptive_retry_lock:
+            state = self._adaptive_retry_state_item(channel, window)
+            recent = state["recent"]
+            recent.append(1 if success else 0)
+            state["consecutive_failures"] = 0 if success else int(state.get("consecutive_failures", 0)) + 1
+
+    async def suggest_route_parallelism(
+        self,
+        day_concurrency: int,
+        segment_concurrency: int,
+    ) -> tuple[int, int, str | None]:
+        base_day = max(1, int(day_concurrency))
+        base_segment = max(1, int(segment_concurrency))
+        if not self._adaptive_retry_enabled():
+            return base_day, base_segment, None
+
+        window = max(1, int(self.settings.amap_mcp_adaptive_retry_window))
+        min_samples = max(1, int(self.settings.amap_mcp_adaptive_retry_min_samples))
+        low_success_rate = float(self.settings.amap_mcp_adaptive_retry_low_success_rate)
+
+        penalty = 0
+        worst_success_rate: float | None = None
+        max_consecutive_failures = 0
+
+        async with self._adaptive_retry_lock:
+            for channel, raw_state in self._adaptive_retry_stats.items():
+                if not str(channel).startswith("route_"):
+                    continue
+                state = self._adaptive_retry_state_item(str(channel), window)
+                recent = state.get("recent")
+                if isinstance(recent, deque):
+                    samples = len(recent)
+                    if samples >= min_samples:
+                        success_rate = (sum(recent) / samples) if samples else 1.0
+                        if worst_success_rate is None or success_rate < worst_success_rate:
+                            worst_success_rate = success_rate
+                max_consecutive_failures = max(
+                    max_consecutive_failures,
+                    int(state.get("consecutive_failures", 0)),
+                )
+
+        if max_consecutive_failures >= 4:
+            penalty = max(penalty, 2)
+        elif max_consecutive_failures >= 2:
+            penalty = max(penalty, 1)
+
+        if worst_success_rate is not None:
+            if worst_success_rate <= max(0.01, low_success_rate / 2):
+                penalty = max(penalty, 2)
+            elif worst_success_rate <= max(0.01, low_success_rate):
+                penalty = max(penalty, 1)
+
+        if penalty <= 0:
+            return base_day, base_segment, None
+
+        adjusted_day = max(1, base_day - penalty)
+        adjusted_segment = max(1, base_segment - penalty)
+        warning = (
+            f"route 并发已自适应下调: day {base_day}->{adjusted_day}, "
+            f"segment {base_segment}->{adjusted_segment}。"
+        )
+        return adjusted_day, adjusted_segment, warning
+
+    def _adaptive_retry_enabled(self) -> bool:
+        return bool(self.settings.amap_mcp_adaptive_retry_enabled)
+
+    def _adaptive_retry_state_item(self, channel: str, window: int) -> dict[str, Any]:
+        state = self._adaptive_retry_stats.get(channel)
+        if state is None:
+            state = {
+                "recent": deque(maxlen=window),
+                "consecutive_failures": 0,
+            }
+            self._adaptive_retry_stats[channel] = state
+            return state
+
+        recent = state.get("recent")
+        if not isinstance(recent, deque):
+            recent = deque(recent or [], maxlen=window)
+            state["recent"] = recent
+        if recent.maxlen != window:
+            state["recent"] = deque(list(recent), maxlen=window)
+        return state
 
     def _is_rate_limit_error(self, exc: Exception) -> bool:
         if self._is_rate_limit_text(str(exc)):
@@ -715,13 +882,22 @@ class AmapMCPAdapter:
             raise MCPProtocolError(
                 f"未找到可用于 {purpose} 的 MCP 工具；当前可用工具: {', '.join(available) if available else '无'}"
             )
+        circuit_key = self._tool_circuit_key(purpose, tool_name)
+        started_at = time.monotonic()
+        call_attempted = False
         try:
+            await self._before_tool_call(circuit_key, purpose, tool_name)
+            call_attempted = True
             result = await asyncio.wait_for(
                 self.client.call_tool(tool_name, arguments),
                 timeout=self.settings.amap_mcp_timeout_seconds + 2,
             )
             normalized = self._unwrap_tool_result(result)
             self._raise_on_tool_error(normalized, tool_name)
+            await self._after_tool_call_success(
+                circuit_key,
+                elapsed_seconds=max(0.0, time.monotonic() - started_at),
+            )
             trace.append(
                 ToolCallRecord(
                     tool_name=tool_name,
@@ -732,6 +908,12 @@ class AmapMCPAdapter:
             )
             return normalized
         except MCPProtocolError as exc:
+            if call_attempted:
+                await self._after_tool_call_failure(
+                    circuit_key,
+                    exc,
+                    elapsed_seconds=max(0.0, time.monotonic() - started_at),
+                )
             trace.append(
                 ToolCallRecord(
                     tool_name=tool_name,
@@ -742,6 +924,12 @@ class AmapMCPAdapter:
             )
             raise
         except Exception as exc:
+            if call_attempted:
+                await self._after_tool_call_failure(
+                    circuit_key,
+                    exc,
+                    elapsed_seconds=max(0.0, time.monotonic() - started_at),
+                )
             trace.append(
                 ToolCallRecord(
                     tool_name=tool_name,
@@ -751,6 +939,163 @@ class AmapMCPAdapter:
                 )
             )
             raise
+        except asyncio.CancelledError as exc:
+            if call_attempted:
+                await self._after_tool_call_failure(
+                    circuit_key,
+                    exc,
+                    elapsed_seconds=max(0.0, time.monotonic() - started_at),
+                )
+            raise
+
+    def _tool_circuit_key(self, purpose: str, tool_name: str) -> str:
+        return f"{purpose}::{tool_name}"
+
+    def _tool_circuit_enabled(self) -> bool:
+        return bool(self.settings.amap_mcp_circuit_enabled)
+
+    def _tool_circuit_open_window_seconds(self) -> float:
+        return max(0.01, float(self.settings.amap_mcp_circuit_open_seconds))
+
+    def _tool_circuit_state_item(self, key: str) -> dict[str, Any]:
+        existing = self._tool_circuit_state.get(key)
+        if existing is not None:
+            return existing
+        state = {
+            "status": "closed",
+            "open_until": 0.0,
+            "consecutive_failures": 0,
+            "consecutive_slow_calls": 0,
+            "trial_in_flight": False,
+            "reason": "",
+        }
+        self._tool_circuit_state[key] = state
+        return state
+
+    def _open_tool_circuit_unlocked(self, state: dict[str, Any], now: float, reason: str) -> None:
+        state["status"] = "open"
+        state["open_until"] = now + self._tool_circuit_open_window_seconds()
+        state["consecutive_failures"] = 0
+        state["consecutive_slow_calls"] = 0
+        state["trial_in_flight"] = False
+        state["reason"] = reason
+
+    async def _before_tool_call(self, key: str, purpose: str, tool_name: str) -> None:
+        if not self._tool_circuit_enabled():
+            return
+        now = time.monotonic()
+        async with self._tool_circuit_lock:
+            state = self._tool_circuit_state_item(key)
+            status = str(state.get("status", "closed"))
+            if status == "open":
+                remaining = float(state.get("open_until", 0.0)) - now
+                if remaining > 0:
+                    raise MCPProtocolError(
+                        f"{tool_name} 熔断中 ({purpose})，约 {int(math.ceil(remaining))}s 后重试。"
+                    )
+                state["status"] = "half_open"
+                state["trial_in_flight"] = False
+            if str(state.get("status", "closed")) == "half_open":
+                if bool(state.get("trial_in_flight", False)):
+                    raise MCPProtocolError(f"{tool_name} 半开探测中 ({purpose})，请稍后重试。")
+                state["trial_in_flight"] = True
+
+    async def _after_tool_call_success(self, key: str, elapsed_seconds: float) -> None:
+        if not self._tool_circuit_enabled():
+            return
+        now = time.monotonic()
+        async with self._tool_circuit_lock:
+            state = self._tool_circuit_state_item(key)
+            status = str(state.get("status", "closed"))
+            state["trial_in_flight"] = False
+            if status == "half_open":
+                state["status"] = "closed"
+                state["open_until"] = 0.0
+                state["consecutive_failures"] = 0
+                state["consecutive_slow_calls"] = 0
+                state["reason"] = ""
+                return
+            if status == "open":
+                return
+            state["consecutive_failures"] = 0
+            slow_seconds = float(self.settings.amap_mcp_circuit_slow_call_seconds)
+            slow_threshold = int(self.settings.amap_mcp_circuit_slow_call_threshold)
+            if slow_seconds <= 0 or slow_threshold <= 0:
+                state["consecutive_slow_calls"] = 0
+                return
+            if elapsed_seconds >= slow_seconds:
+                state["consecutive_slow_calls"] = int(state.get("consecutive_slow_calls", 0)) + 1
+                if int(state.get("consecutive_slow_calls", 0)) >= slow_threshold:
+                    self._open_tool_circuit_unlocked(
+                        state,
+                        now,
+                        reason=f"连续慢调用达到阈值 ({slow_threshold})",
+                    )
+                return
+            state["consecutive_slow_calls"] = 0
+
+    async def _after_tool_call_failure(
+        self,
+        key: str,
+        exc: BaseException,
+        elapsed_seconds: float,
+    ) -> None:
+        _ = elapsed_seconds
+        if not self._tool_circuit_enabled():
+            return
+        now = time.monotonic()
+        async with self._tool_circuit_lock:
+            state = self._tool_circuit_state_item(key)
+            status = str(state.get("status", "closed"))
+            state["trial_in_flight"] = False
+            if status == "half_open":
+                self._open_tool_circuit_unlocked(
+                    state,
+                    now,
+                    reason=f"半开探测失败: {exc.__class__.__name__}",
+                )
+                return
+            if status == "open":
+                return
+            if not self._is_circuit_breaker_failure(exc):
+                return
+            state["consecutive_slow_calls"] = 0
+            state["consecutive_failures"] = int(state.get("consecutive_failures", 0)) + 1
+            threshold = int(self.settings.amap_mcp_circuit_failure_threshold)
+            if threshold <= 0:
+                return
+            if int(state.get("consecutive_failures", 0)) >= threshold:
+                self._open_tool_circuit_unlocked(
+                    state,
+                    now,
+                    reason=f"连续失败达到阈值 ({threshold})",
+                )
+
+    def _is_circuit_breaker_failure(self, exc: BaseException) -> bool:
+        if isinstance(exc, asyncio.CancelledError):
+            return False
+        return True
+
+    async def _tool_circuit_warning_messages(self) -> list[str]:
+        if not self._tool_circuit_enabled():
+            return []
+        now = time.monotonic()
+        warnings: list[str] = []
+        async with self._tool_circuit_lock:
+            for key, state in self._tool_circuit_state.items():
+                status = str(state.get("status", "closed"))
+                if status != "open":
+                    continue
+                remaining = float(state.get("open_until", 0.0)) - now
+                if remaining <= 0:
+                    continue
+                purpose, _, tool_name = key.partition("::")
+                reason = str(state.get("reason", "")).strip()
+                reason_text = f"，原因: {reason}" if reason else ""
+                warnings.append(
+                    f"MCP 工具熔断生效: {tool_name} ({purpose})，约 {int(math.ceil(remaining))}s 后重试{reason_text}。"
+                )
+        return warnings
 
     async def _ensure_tool_catalog(self, force_refresh: bool = False) -> list[dict[str, Any]]:
         if self.client is None:
@@ -763,17 +1108,26 @@ class AmapMCPAdapter:
         ):
             return self._tool_catalog
 
-        result = await asyncio.wait_for(
-            self.client.list_tools(),
-            timeout=self.settings.amap_mcp_timeout_seconds + 2,
-        )
-        tools = result.get("tools", []) if isinstance(result, dict) else []
-        if not isinstance(tools, list):
-            tools = []
-        self._tool_catalog = [item for item in tools if isinstance(item, dict)]
-        self._tool_catalog_cached_at = now
-        self._resolved_tools = {}
-        return self._tool_catalog
+        async with self._tool_catalog_lock:
+            now = time.monotonic()
+            if (
+                self._tool_catalog is not None
+                and not force_refresh
+                and (now - self._tool_catalog_cached_at) <= self._tool_catalog_ttl_seconds
+            ):
+                return self._tool_catalog
+
+            result = await asyncio.wait_for(
+                self.client.list_tools(),
+                timeout=self.settings.amap_mcp_timeout_seconds + 2,
+            )
+            tools = result.get("tools", []) if isinstance(result, dict) else []
+            if not isinstance(tools, list):
+                tools = []
+            self._tool_catalog = [item for item in tools if isinstance(item, dict)]
+            self._tool_catalog_cached_at = now
+            self._resolved_tools = {}
+            return self._tool_catalog
 
     def _resolve_tool_name(self, purpose: str, strict: bool = True) -> str | None:
         if purpose in self._resolved_tools:
@@ -987,9 +1341,13 @@ class AmapMCPAdapter:
         target_count: int,
     ) -> list[POIRecommendation]:
         pois: list[POIRecommendation] = []
-        deduped_queries = self._dedupe_queries(queries)
-        for citylimit in ("true", "false"):
-            for query in deduped_queries:
+        deduped_queries = self._prioritize_poi_queries(self._dedupe_queries(queries))
+        query_budget = self._poi_query_budget(target_count, len(deduped_queries))
+        query_budget, citylimit_modes = await self._adaptive_poi_search_plan(query_budget)
+        selected_queries = deduped_queries[:query_budget]
+        for citylimit in citylimit_modes:
+            consecutive_empty = 0
+            for index, query in enumerate(selected_queries):
                 try:
                     raw = await self._call_tool_for_purpose(
                         "poi_search",
@@ -997,13 +1355,25 @@ class AmapMCPAdapter:
                         trace,
                     )
                 except Exception as exc:
+                    await self._record_adaptive_retry_result("poi_search", success=False)
                     if self._is_rate_limit_error(exc):
                         return self._merge_unique_pois(pois)
                     raise
-                pois.extend(self._normalize_pois(raw, fallback_kind=fallback_kind))
+                normalized = self._normalize_pois(raw, fallback_kind=fallback_kind)
+                await self._record_adaptive_retry_result("poi_search", success=bool(normalized))
+                if normalized:
+                    consecutive_empty = 0
+                else:
+                    consecutive_empty += 1
+                pois.extend(normalized)
                 merged = self._merge_unique_pois(pois)
                 if len(merged) >= target_count:
                     return merged
+                if consecutive_empty >= self._poi_search_consecutive_empty_stop:
+                    if pois:
+                        break
+                    if index + 1 >= max(1, len(selected_queries) // 2):
+                        break
             if pois:
                 return self._merge_unique_pois(pois)
         return self._merge_unique_pois(pois)
@@ -1025,6 +1395,60 @@ class AmapMCPAdapter:
             seen.add(normalized)
             cleaned.append(normalized)
         return cleaned
+
+    def _prioritize_poi_queries(self, queries: list[str]) -> list[str]:
+        generic_markers = (
+            "热门景点",
+            "旅游景点",
+            "景区",
+            "本地美食",
+            "特色餐厅",
+            "热门餐厅",
+            "酒店",
+            "舒适型酒店",
+            "景点",
+            "餐厅",
+            "美食",
+        )
+        specific: list[str] = []
+        generic: list[str] = []
+        for query in queries:
+            if any(marker in query for marker in generic_markers):
+                generic.append(query)
+            else:
+                specific.append(query)
+        return [*specific, *generic]
+
+    def _poi_query_budget(self, target_count: int, total_queries: int) -> int:
+        if total_queries <= 0:
+            return 0
+        dynamic_budget = max(self._poi_query_budget_floor, target_count + 2)
+        budget = min(self._poi_query_budget_cap, dynamic_budget)
+        return max(1, min(total_queries, budget))
+
+    async def _adaptive_poi_search_plan(self, base_query_budget: int) -> tuple[int, tuple[str, ...]]:
+        if not self._adaptive_retry_enabled():
+            return max(1, base_query_budget), ("true", "false")
+
+        window = max(1, int(self.settings.amap_mcp_adaptive_retry_window))
+        min_samples = max(1, int(self.settings.amap_mcp_adaptive_retry_min_samples))
+        low_success_rate = float(self.settings.amap_mcp_adaptive_retry_low_success_rate)
+        async with self._adaptive_retry_lock:
+            state = self._adaptive_retry_state_item("poi_search", window)
+            recent = state["recent"]
+            samples = len(recent)
+            if samples < min_samples:
+                return max(1, base_query_budget), ("true", "false")
+            success_rate = (sum(recent) / samples) if samples else 1.0
+            consecutive_failures = int(state.get("consecutive_failures", 0))
+
+        if consecutive_failures >= 3:
+            return max(1, min(base_query_budget, 3)), ("true",)
+        if success_rate <= max(0.01, low_success_rate / 2):
+            return max(1, min(base_query_budget, int(math.ceil(base_query_budget * 0.4)))), ("true",)
+        if success_rate <= max(0.01, low_success_rate):
+            return max(1, min(base_query_budget, int(math.ceil(base_query_budget * 0.6)))), ("true",)
+        return max(1, base_query_budget), ("true", "false")
 
     def _build_route_arguments(
         self,

@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import math
 
 from app.schemas.planning import (
@@ -14,14 +15,29 @@ from app.schemas.planning import (
     TripPlanningRequest,
 )
 from app.services.amap_mcp_adapter import AmapMCPAdapter
+from app.config import Settings
 
 
 class RoutePlanningAgent:
-    def __init__(self, adapter: AmapMCPAdapter) -> None:
+    def __init__(self, adapter: AmapMCPAdapter, settings: Settings | None = None) -> None:
         self.adapter = adapter
-        # Keep low concurrency to balance latency and upstream rate-limit pressure.
-        self._segment_concurrency = 2
-        self._truth_binding_day_concurrency = 2
+        # Keep low default concurrency to balance latency and upstream rate-limit pressure.
+        self._segment_concurrency = max(
+            1,
+            int((settings.planner_route_segment_concurrency if settings else 2)),
+        )
+        self._day_concurrency = max(
+            1,
+            int((settings.planner_route_day_concurrency if settings else 2)),
+        )
+        self._truth_binding_day_concurrency = max(
+            1,
+            int((settings.planner_truth_binding_day_concurrency if settings else 2)),
+        )
+        self._activity_resolve_concurrency = max(
+            1,
+            int((settings.planner_route_activity_resolve_concurrency if settings else 3)),
+        )
         self._named_location_cache: dict[str, POIRecommendation | None] = {}
 
     async def gather(
@@ -134,17 +150,41 @@ class RoutePlanningAgent:
         fallback_days = 0
         warnings: list[str] = []
         sorted_days = sorted(plan.days, key=lambda item: item.day_number)
-        day_concurrency = min(2, max(1, len(sorted_days)))
+        effective_day_concurrency = self._day_concurrency
+        effective_segment_concurrency = self._segment_concurrency
+        suggest_parallelism = getattr(self.adapter, "suggest_route_parallelism", None)
+        if callable(suggest_parallelism):
+            try:
+                (
+                    effective_day_concurrency,
+                    effective_segment_concurrency,
+                    parallelism_warning,
+                ) = await suggest_parallelism(
+                    day_concurrency=self._day_concurrency,
+                    segment_concurrency=self._segment_concurrency,
+                )
+                if parallelism_warning:
+                    warnings.append(parallelism_warning)
+            except Exception:
+                # Keep configured concurrency if adaptive suggestion is unavailable.
+                effective_day_concurrency = self._day_concurrency
+                effective_segment_concurrency = self._segment_concurrency
+
+        day_concurrency = min(effective_day_concurrency, max(1, len(sorted_days)))
         semaphore = asyncio.Semaphore(day_concurrency)
 
         async def _plan_day(index: int, day: DayPlan):
             async with semaphore:
-                day_routes, day_used_fallback, day_warning = await self._plan_routes_for_day(
-                    request=request,
-                    day=day,
-                    context=context,
-                    trace=trace,
-                )
+                planner = self._plan_routes_for_day
+                planner_kwargs = {
+                    "request": request,
+                    "day": day,
+                    "context": context,
+                    "trace": trace,
+                }
+                if "segment_concurrency" in inspect.signature(planner).parameters:
+                    planner_kwargs["segment_concurrency"] = effective_segment_concurrency
+                day_routes, day_used_fallback, day_warning = await planner(**planner_kwargs)
             return index, day_routes, day_used_fallback, day_warning
 
         day_results = await asyncio.gather(
@@ -381,7 +421,7 @@ class RoutePlanningAgent:
             route_segments = [day.route_summary]
 
         stay_poi = day.stay.poi
-        if self._should_rebind_poi(stay_poi):
+        if self._should_rebind_named_poi(day.stay.hotel_name or day.hotel_area, stay_poi):
             try:
                 stay_poi = await self._resolve_origin_for_day(
                     request=request,
@@ -408,7 +448,11 @@ class RoutePlanningAgent:
         updated_activities = []
         for activity in day.activities:
             resolved = activity.poi
-            if self._should_rebind_poi(resolved):
+            if self._should_rebind_named_poi(
+                activity.location_name or activity.title,
+                resolved,
+                activity_title=activity.title,
+            ):
                 try:
                     resolved = await self._resolve_activity_location(
                         city=request.destination,
@@ -446,7 +490,7 @@ class RoutePlanningAgent:
         updated_meals = []
         for meal in day.meals:
             resolved_meal = meal.poi
-            if self._should_rebind_poi(resolved_meal) and meal.venue_name:
+            if self._should_rebind_named_poi(meal.venue_name, resolved_meal) and meal.venue_name:
                 try:
                     resolved_meal = await self._resolve_named_location(
                         city=request.destination,
@@ -626,6 +670,7 @@ class RoutePlanningAgent:
         day: DayPlan,
         context: PlanningContext,
         trace: list[ToolCallRecord],
+        segment_concurrency: int | None = None,
     ) -> tuple[list[RouteSummary], bool, str | None]:
         anchor_points = [*context.attractions, *context.hotels]
         preferred_mode = self._preferred_mode(request)
@@ -706,7 +751,7 @@ class RoutePlanningAgent:
                 }
             )
 
-        semaphore = asyncio.Semaphore(max(1, self._segment_concurrency))
+        semaphore = asyncio.Semaphore(max(1, int(segment_concurrency or self._segment_concurrency)))
         try:
             segment_results = await asyncio.gather(
                 *[
@@ -775,16 +820,21 @@ class RoutePlanningAgent:
         anchor_points: list[POIRecommendation],
         trace: list[ToolCallRecord],
     ) -> list[tuple[POIRecommendation, str]]:
-        activity_points: list[tuple[POIRecommendation, str]] = []
-        for activity in day.activities:
-            resolved = await self._resolve_activity_location(
-                city=request.destination,
-                location_name=activity.location_name,
-                activity_title=activity.title,
-                context=context,
-                trace=trace,
-                anchor_points=anchor_points,
-            )
+        if not day.activities:
+            return []
+
+        semaphore = asyncio.Semaphore(max(1, self._activity_resolve_concurrency))
+
+        async def _resolve_one(index: int, activity) -> tuple[int, tuple[POIRecommendation, str]]:
+            async with semaphore:
+                resolved = await self._resolve_activity_location(
+                    city=request.destination,
+                    location_name=activity.location_name,
+                    activity_title=activity.title,
+                    context=context,
+                    trace=trace,
+                    anchor_points=anchor_points,
+                )
             if resolved is None:
                 resolved = POIRecommendation(
                     name=activity.location_name,
@@ -792,13 +842,17 @@ class RoutePlanningAgent:
                     district=request.destination,
                     source="activity_fallback",
                 )
-            activity_points.append(
-                (
-                    self._ensure_route_ready_poi(resolved, request.destination),
-                    activity.location_name,
-                )
+            point = (
+                self._ensure_route_ready_poi(resolved, request.destination),
+                activity.location_name,
             )
-        return activity_points
+            return index, point
+
+        resolved_points = await asyncio.gather(
+            *[_resolve_one(index, activity) for index, activity in enumerate(day.activities)]
+        )
+        resolved_points.sort(key=lambda item: item[0])
+        return [point for _, point in resolved_points]
 
     async def _resolve_activity_location(
         self,
@@ -940,6 +994,72 @@ class RoutePlanningAgent:
             "activity_fallback",
             "stay_fallback",
         }
+
+    def _should_rebind_named_poi(
+        self,
+        expected_name: str,
+        poi: POIRecommendation | None,
+        activity_title: str = "",
+    ) -> bool:
+        if self._should_rebind_poi(poi):
+            return True
+        if poi is None:
+            return True
+
+        references = self._build_activity_location_queries(expected_name, activity_title) if activity_title else [expected_name]
+        return not self._poi_matches_expected_name(poi, references)
+
+    def _trusted_candidates(
+        self,
+        candidates: list[POIRecommendation | None],
+    ) -> list[POIRecommendation]:
+        trusted: list[POIRecommendation] = []
+        for item in candidates:
+            if item is None or self._should_rebind_poi(item):
+                continue
+            trusted.append(item)
+        return trusted
+
+    def _match_trusted_candidate(
+        self,
+        expected_name: str,
+        candidates: list[POIRecommendation],
+        activity_title: str = "",
+    ) -> POIRecommendation | None:
+        references = self._build_activity_location_queries(expected_name, activity_title) if activity_title else [expected_name]
+        for candidate in candidates:
+            if self._poi_matches_expected_name(candidate, references):
+                return candidate
+        return None
+
+    def _poi_matches_expected_name(
+        self,
+        poi: POIRecommendation,
+        references: list[str],
+    ) -> bool:
+        normalized_name = self._normalize_location_name(poi.name)
+        normalized_address = self._normalize_location_name(poi.address or "")
+        normalized_district = self._normalize_location_name(poi.district or "")
+        if not any((normalized_name, normalized_address, normalized_district)):
+            return False
+
+        for reference in references:
+            normalized_reference = self._normalize_location_name(reference)
+            if not normalized_reference:
+                continue
+            if normalized_name:
+                if normalized_reference == normalized_name:
+                    return True
+                if len(normalized_reference) >= 2 and normalized_reference in normalized_name:
+                    return True
+                if len(normalized_name) >= 4 and normalized_name in normalized_reference:
+                    return True
+            if len(normalized_reference) >= 4:
+                if normalized_address and normalized_reference in normalized_address:
+                    return True
+                if normalized_district and normalized_reference == normalized_district:
+                    return True
+        return False
 
     def _build_activity_location_queries(
         self,

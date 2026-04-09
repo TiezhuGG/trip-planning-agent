@@ -1,9 +1,11 @@
 ﻿from __future__ import annotations
 
 import asyncio
+from collections import deque
 import json
 import math
 import re
+import time
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -83,6 +85,13 @@ class TravelAIClient:
         self.secondary_model = settings.openai_backup_model
         self.secondary_base_url = self._normalize_base_url(settings.openai_backup_base_url)
         self._preferred_json_mode_by_model: dict[str, str] = {}
+        self._unsupported_json_modes_by_model: dict[str, set[str]] = {}
+        self._diagnose_cache_ttl_seconds = max(0.0, float(settings.openai_diagnose_cache_seconds))
+        self._diagnose_cached_at: float = 0.0
+        self._diagnose_cached_result: LLMDiagnosisResult | None = None
+        self._diagnose_lock = asyncio.Lock()
+        self._adaptive_retry_stats: dict[str, dict[str, Any]] = {}
+        self._adaptive_retry_lock = asyncio.Lock()
         if settings.has_openai and AsyncOpenAI is not None:
             self.client = self._create_client(
                 api_key=settings.openai_api_key,
@@ -137,6 +146,23 @@ class TravelAIClient:
         return self.primary_model or self.secondary_model or self.settings.openai_model or self.settings.openai_backup_model
 
     async def diagnose(self, check_connection: bool = True) -> LLMDiagnosisResult:
+        if check_connection and self._diagnose_cache_ttl_seconds > 0:
+            now = time.monotonic()
+            cached = self._diagnose_cached_result
+            if cached is not None and (now - self._diagnose_cached_at) <= self._diagnose_cache_ttl_seconds:
+                return self._copy_llm_diagnosis(cached)
+            async with self._diagnose_lock:
+                now = time.monotonic()
+                cached = self._diagnose_cached_result
+                if cached is not None and (now - self._diagnose_cached_at) <= self._diagnose_cache_ttl_seconds:
+                    return self._copy_llm_diagnosis(cached)
+                result = await self._diagnose_impl(check_connection=check_connection)
+                self._diagnose_cached_result = self._copy_llm_diagnosis(result)
+                self._diagnose_cached_at = now
+                return result
+        return await self._diagnose_impl(check_connection=check_connection)
+
+    async def _diagnose_impl(self, check_connection: bool = True) -> LLMDiagnosisResult:
         providers = self._configured_providers()
         if not providers and not self.settings.has_any_openai:
             return LLMDiagnosisResult(
@@ -197,6 +223,15 @@ class TravelAIClient:
             model=self._default_model_name(),
             base_url=(providers[0].base_url if providers else ""),
             warnings=warnings,
+        )
+
+    def _copy_llm_diagnosis(self, result: LLMDiagnosisResult) -> LLMDiagnosisResult:
+        return LLMDiagnosisResult(
+            enabled=bool(result.enabled),
+            reachable=bool(result.reachable),
+            model=str(result.model),
+            base_url=str(result.base_url),
+            warnings=list(result.warnings),
         )
 
     async def build_initial_plan(self, request: TripPlanningRequest) -> InitialPlanBuildResult:
@@ -421,7 +456,11 @@ class TravelAIClient:
         )
         warnings: list[str] = []
         last_error: Exception | None = None
-        retry_specs = self._compose_retry_specs()
+        channel = f"compose::{model or self.primary_model or self.settings.openai_model}"
+        retry_specs = await self._adaptive_retry_specs(
+            channel=channel,
+            retry_specs=self._compose_retry_specs(),
+        )
 
         for attempt, (temperature, max_tokens) in enumerate(retry_specs, start=1):
             payload: dict[str, Any] | None = None
@@ -444,6 +483,7 @@ class TravelAIClient:
                     model=model,
                 )
                 plan = self._finalize_composed_plan(request=request, context=context, payload=payload)
+                await self._record_adaptive_retry_result(channel, success=True)
                 return plan, warnings
             except Exception as exc:
                 allow_repair = (not self.settings.openai_fast_mode) or attempt == len(retry_specs)
@@ -462,6 +502,7 @@ class TravelAIClient:
                                 context=context,
                                 payload=repaired_payload,
                             )
+                            await self._record_adaptive_retry_result(channel, success=True)
                             warnings.append(f"compose 第 {attempt} 次触发补全修复并成功。")
                             return plan, warnings
                         except Exception as repair_exc:
@@ -469,6 +510,7 @@ class TravelAIClient:
 
                 last_error = exc
                 if not self._is_retryable_compose_error(exc) or attempt >= len(retry_specs):
+                    await self._record_adaptive_retry_result(channel, success=False)
                     break
                 warnings.append(
                     f"compose 第 {attempt} 次失败，已重试。原因: {self._format_exception(exc)}"
@@ -808,6 +850,9 @@ class TravelAIClient:
                 errors.append(f"{mode}: 返回了不可解析的内容")
             except Exception as exc:
                 errors.append(f"{mode}: {self._format_exception(exc)}")
+                if self._is_unsupported_json_mode_error(exc, mode):
+                    self._mark_json_mode_unsupported(model, mode)
+                    continue
                 if self._is_terminal_request_error(exc):
                     break
 
@@ -819,10 +864,49 @@ class TravelAIClient:
     ) -> list[str]:
         default_modes = ["json_object", "plain_text_json", "minimal"]
         key = str(model or "")
+        unsupported = self._unsupported_json_modes_by_model.get(key, set())
+        available_modes = [mode for mode in default_modes if mode not in unsupported]
+        if not available_modes:
+            return ["minimal"]
         preferred = self._preferred_json_mode_by_model.get(key)
-        if not preferred or preferred not in default_modes:
-            return default_modes
-        return [preferred] + [mode for mode in default_modes if mode != preferred]
+        if not preferred or preferred not in available_modes:
+            return available_modes
+        return [preferred] + [mode for mode in available_modes if mode != preferred]
+
+    def _mark_json_mode_unsupported(self, model: str | None, mode: str) -> None:
+        key = str(model or "")
+        if not key:
+            return
+        unsupported = self._unsupported_json_modes_by_model.get(key)
+        if unsupported is None:
+            unsupported = set()
+            self._unsupported_json_modes_by_model[key] = unsupported
+        unsupported.add(mode)
+        preferred = self._preferred_json_mode_by_model.get(key)
+        if preferred == mode:
+            self._preferred_json_mode_by_model.pop(key, None)
+
+    def _is_unsupported_json_mode_error(self, exc: Exception, mode: str) -> bool:
+        if mode != "json_object":
+            return False
+        message = str(exc).lower()
+        response_format_markers = (
+            "response_format",
+            "json_object",
+            "json schema",
+            "json_schema",
+        )
+        unsupported_markers = (
+            "not support",
+            "unsupported",
+            "invalid",
+            "invalid_request_error",
+            "badrequesterror",
+            "not allowed",
+        )
+        return any(marker in message for marker in response_format_markers) and any(
+            marker in message for marker in unsupported_markers
+        )
 
     def _is_terminal_request_error(
         self,
@@ -874,13 +958,81 @@ class TravelAIClient:
             return min(0.3, 0.1 * attempt)
         return min(2.0, 0.4 * attempt)
 
+    async def _adaptive_retry_specs(
+        self,
+        channel: str,
+        retry_specs: list[tuple[float, int]],
+    ) -> list[tuple[float, int]]:
+        specs = list(retry_specs)
+        if not self._adaptive_retry_enabled():
+            return specs
+
+        window = max(1, int(self.settings.openai_adaptive_retry_window))
+        min_samples = max(1, int(self.settings.openai_adaptive_retry_min_samples))
+        low_success_rate = float(self.settings.openai_adaptive_retry_low_success_rate)
+        async with self._adaptive_retry_lock:
+            state = self._adaptive_retry_state_item(channel, window)
+            recent = state["recent"]
+            samples = len(recent)
+            if samples < min_samples:
+                return specs
+            success_rate = (sum(recent) / samples) if samples else 1.0
+            consecutive_failures = int(state.get("consecutive_failures", 0))
+            trim = 0
+            if consecutive_failures >= 3:
+                trim = max(trim, 2)
+            elif consecutive_failures >= 2:
+                trim = max(trim, 1)
+            if success_rate <= max(0.01, low_success_rate / 2):
+                trim = max(trim, 2)
+            elif success_rate <= max(0.01, low_success_rate):
+                trim = max(trim, 1)
+            if trim <= 0:
+                return specs
+            return specs[: max(1, len(specs) - trim)]
+
+    async def _record_adaptive_retry_result(self, channel: str, success: bool) -> None:
+        if not self._adaptive_retry_enabled():
+            return
+        window = max(1, int(self.settings.openai_adaptive_retry_window))
+        async with self._adaptive_retry_lock:
+            state = self._adaptive_retry_state_item(channel, window)
+            recent = state["recent"]
+            recent.append(1 if success else 0)
+            state["consecutive_failures"] = 0 if success else int(state.get("consecutive_failures", 0)) + 1
+
+    def _adaptive_retry_enabled(self) -> bool:
+        return bool(self.settings.openai_adaptive_retry_enabled)
+
+    def _adaptive_retry_state_item(self, channel: str, window: int) -> dict[str, Any]:
+        state = self._adaptive_retry_stats.get(channel)
+        if state is None:
+            state = {
+                "recent": deque(maxlen=window),
+                "consecutive_failures": 0,
+            }
+            self._adaptive_retry_stats[channel] = state
+            return state
+
+        recent = state.get("recent")
+        if not isinstance(recent, deque):
+            recent = deque(recent or [], maxlen=window)
+            state["recent"] = recent
+        if recent.maxlen != window:
+            state["recent"] = deque(list(recent), maxlen=window)
+        return state
+
     async def _build_initial_plan_with_provider(
         self,
         request: TripPlanningRequest,
         provider: LLMProvider,
     ) -> tuple[InitialPlanDraft, list[str]]:
         warnings: list[str] = []
-        retry_specs = self._seed_retry_specs()
+        channel = f"seed::{provider.model}"
+        retry_specs = await self._adaptive_retry_specs(
+            channel=channel,
+            retry_specs=self._seed_retry_specs(),
+        )
         last_error: Exception | None = None
         for attempt, (temperature, max_tokens) in enumerate(retry_specs, start=1):
             try:
@@ -891,14 +1043,17 @@ class TravelAIClient:
                     client=provider.client,
                     model=provider.model,
                 )
+                await self._record_adaptive_retry_result(channel, success=True)
                 if provider.label != "主模型" and self.client is not None:
                     warnings.append(f"已切换到备用模型 {provider.model} 继续生成初步规划。")
                 return draft, warnings
             except Exception as exc:
                 last_error = exc
                 if self._should_switch_to_backup_model(exc):
+                    await self._record_adaptive_retry_result(channel, success=False)
                     raise
                 if not self._is_retryable_seed_error(exc) or attempt >= len(retry_specs):
+                    await self._record_adaptive_retry_result(channel, success=False)
                     break
                 warnings.append(f"seed 第 {attempt} 次失败，已重试。原因: {self._format_exception(exc)}")
                 await asyncio.sleep(self._retry_backoff_seconds(attempt))

@@ -1,19 +1,25 @@
 ﻿<script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
 
-import { generatePlan, getIntegrationStatus } from "./api/planning";
+import {
+  generatePlan,
+  getIntegrationStatus,
+  getPlanningTelemetry,
+} from "./api/planning";
 import AgentTrace from "./components/AgentTrace.vue";
 import AmapMap from "./components/AmapMap.vue";
 import DailyItinerarySection from "./components/DailyItinerarySection.vue";
 import LandingHero from "./components/LandingHero.vue";
 import IntegrationPrecheckPanel from "./components/IntegrationPrecheckPanel.vue";
 import NotificationModal from "./components/NotificationModal.vue";
+import PlanningTelemetryPanel from "./components/PlanningTelemetryPanel.vue";
 import PlannerLaunchPanel from "./components/PlannerLaunchPanel.vue";
 import TravelTonePanel from "./components/TravelTonePanel.vue";
 import type {
   DailyForecast,
   DayPOI,
   IntegrationStatus,
+  PlanningTelemetry,
   PlanningResponse,
   RouteSummary,
   TripPlanningRequest,
@@ -85,6 +91,9 @@ const integrationStatus = ref<IntegrationStatus>(
 );
 const integrationLoading = ref(false);
 const integrationError = ref("");
+const telemetry = ref<PlanningTelemetry>(createEmptyPlanningTelemetry());
+const telemetryLoading = ref(false);
+const telemetryError = ref("");
 const expandedDays = ref<number[]>([]);
 const noticeModal = reactive({
   open: false,
@@ -181,7 +190,8 @@ watch(
 );
 
 onMounted(() => {
-  if (showDevPanels) void loadIntegrationStatus();
+  if (!showDevPanels) return;
+  void Promise.all([loadIntegrationStatus(), loadPlanningTelemetry()]);
 });
 
 function openNotice(
@@ -266,11 +276,25 @@ function createEmptyIntegrationStatus(): IntegrationStatus {
     warnings: [],
   };
 }
-async function loadIntegrationStatus() {
+
+function createEmptyPlanningTelemetry(): PlanningTelemetry {
+  return {
+    enabled: false,
+    window_size: 0,
+    total_requests: 0,
+    cache_hits: 0,
+    cache_misses: 0,
+    stages: {},
+    updated_at: null,
+    warnings: [],
+  };
+}
+
+async function loadIntegrationStatus(refresh = false) {
   integrationLoading.value = true;
   integrationError.value = "";
   try {
-    integrationStatus.value = await getIntegrationStatus();
+    integrationStatus.value = await getIntegrationStatus({ refresh });
   } catch (error) {
     integrationError.value =
       error instanceof Error
@@ -284,6 +308,20 @@ async function loadIntegrationStatus() {
     }
   } finally {
     integrationLoading.value = false;
+  }
+}
+
+async function loadPlanningTelemetry() {
+  telemetryLoading.value = true;
+  telemetryError.value = "";
+  try {
+    telemetry.value = await getPlanningTelemetry();
+  } catch (error) {
+    telemetryError.value =
+      error instanceof Error ? error.message : "获取性能统计失败，请稍后重试。";
+    telemetry.value = createEmptyPlanningTelemetry();
+  } finally {
+    telemetryLoading.value = false;
   }
 }
 function formatDate(date: Date) {
@@ -398,6 +436,7 @@ async function submitPlan() {
     console.error("plan generation failed", error);
   } finally {
     loading.value = false;
+    if (showDevPanels) void loadPlanningTelemetry();
   }
 }
 function resetPlanner() {
@@ -679,7 +718,14 @@ function budgetLabel(value: TripPlanningRequest["budget_level"]) {
               v-if="showDevPanels"
               :integration-status="currentIntegrationStatus"
               :integration-loading="integrationLoading"
-              @refresh="loadIntegrationStatus"
+              @refresh="() => loadIntegrationStatus(true)"
+            />
+            <PlanningTelemetryPanel
+              v-if="showDevPanels"
+              :telemetry="telemetry"
+              :loading="telemetryLoading"
+              :error="telemetryError"
+              @refresh="loadPlanningTelemetry"
             />
           </div>
         </section>
@@ -814,7 +860,13 @@ function budgetLabel(value: TripPlanningRequest["budget_level"]) {
             />
           </div>
         </section>
-        <section v-if="showDevPanels" class="grid gap-6 xl:grid-cols-2">
+        <section v-if="showDevPanels" class="grid gap-6 xl:grid-cols-3">
+          <PlanningTelemetryPanel
+            :telemetry="telemetry"
+            :loading="telemetryLoading"
+            :error="telemetryError"
+            @refresh="loadPlanningTelemetry"
+          />
           <div
             class="rounded-[36px] border border-white/70 bg-white/88 p-6 shadow-card sm:p-7"
           >
