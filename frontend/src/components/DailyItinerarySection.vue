@@ -1,11 +1,18 @@
 <script setup lang="ts">
 import DailyItineraryCard from "./DailyItineraryCard.vue";
-import type { DailyForecast, DayPlan, MealRecommendation, RouteSummary } from "../types/planning";
+import type {
+  DailyForecast,
+  DayPlan,
+  MealRecommendation,
+  ReservationItem,
+  RouteSummary,
+} from "../types/planning";
 
 const props = defineProps<{
   days: DayPlan[];
   routes: RouteSummary[];
   weatherForecasts: DailyForecast[];
+  reservations?: ReservationItem[];
   expandedDays: number[];
   lockedDays?: number[];
   replanningDays?: number[];
@@ -44,6 +51,29 @@ function getMealRecommendations(day: DayPlan): MealRecommendation[] {
   return day.meals;
 }
 
+function extractIsoDate(value?: string | null) {
+  if (!value) return null;
+  const matched = value.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (matched) return matched[1];
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  const year = parsed.getFullYear();
+  const month = `${parsed.getMonth() + 1}`.padStart(2, "0");
+  const day = `${parsed.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getDayReservations(day: DayPlan): ReservationItem[] {
+  return (props.reservations ?? []).filter((item) => {
+    const startDate = extractIsoDate(item.start_at);
+    const endDate = extractIsoDate(item.end_at);
+    if (startDate && endDate) return startDate <= day.date && endDate >= day.date;
+    if (startDate) return startDate === day.date;
+    if (endDate) return endDate === day.date;
+    return false;
+  });
+}
+
 function isDayLocked(dayNumber: number) {
   return props.lockedDays?.includes(dayNumber) ?? false;
 }
@@ -79,6 +109,7 @@ function isDayReplanning(dayNumber: number) {
         :route-summaries="getDayRoutes(day)"
         :weather="getDayWeather(day)"
         :meal-recommendations="getMealRecommendations(day)"
+        :reservations="getDayReservations(day)"
         :locked="isDayLocked(day.day_number)"
         :replanning="isDayReplanning(day.day_number)"
         @toggle="toggleDay"

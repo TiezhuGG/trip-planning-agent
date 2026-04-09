@@ -3,6 +3,7 @@ import type {
   DailyForecast,
   DayPlan,
   MealRecommendation,
+  ReservationItem,
   RouteSummary,
 } from "../types/planning";
 
@@ -12,6 +13,7 @@ const props = defineProps<{
   routeSummaries: RouteSummary[];
   weather: DailyForecast | null;
   mealRecommendations: MealRecommendation[];
+  reservations?: ReservationItem[];
   locked?: boolean;
   replanning?: boolean;
 }>();
@@ -49,6 +51,25 @@ function formatCny(value: number, suffix = "") {
 function shortAddress(value?: string | null) {
   if (!value) return "";
   return value.length > 28 ? `${value.slice(0, 28)}...` : value;
+}
+
+function formatDateTime(value?: string | null) {
+  if (!value) return "--";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN");
+}
+
+function reservationTypeLabel(type: string) {
+  return (
+    {
+      flight: "航班",
+      train: "火车",
+      hotel: "酒店",
+      restaurant: "餐厅",
+      ticket: "门票",
+      other: "预约",
+    }[type] ?? type
+  );
 }
 </script>
 
@@ -100,6 +121,43 @@ function shortAddress(value?: string | null) {
       <p class="text-sm leading-7 text-slate-600">
         {{ day.overview }}
       </p>
+
+      <div
+        v-if="reservations?.length"
+        class="rounded-[22px] border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-900 shadow-sm"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="font-medium">当日固定安排</div>
+          <span class="rounded-full bg-white/80 px-3 py-1 text-xs text-amber-700">
+            {{ reservations.length }} 个锚点
+          </span>
+        </div>
+        <div class="mt-3 space-y-3">
+          <div
+            v-for="item in reservations"
+            :key="item.id"
+            class="rounded-[18px] border border-amber-100 bg-white px-3 py-3 text-sm text-slate-600"
+          >
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div class="font-medium text-ink">{{ item.title }}</div>
+                <div class="mt-1 text-xs uppercase tracking-[0.12em] text-amber-700">
+                  {{ reservationTypeLabel(item.type) }}
+                </div>
+              </div>
+              <div class="text-xs text-slate-500">
+                {{ formatDateTime(item.start_at) }}{{ item.end_at ? ` - ${formatDateTime(item.end_at)}` : "" }}
+              </div>
+            </div>
+            <div v-if="item.location" class="mt-2 text-xs text-slate-500">
+              地点：{{ item.location }}
+            </div>
+            <div v-if="item.notes" class="mt-2 leading-6">
+              {{ item.notes }}
+            </div>
+          </div>
+        </div>
+      </div>
 
       <div class="grid gap-4 xl:grid-cols-[1.08fr_0.92fr]">
         <div class="space-y-3">

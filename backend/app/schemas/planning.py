@@ -317,6 +317,18 @@ class PlanningResponse(BaseModel):
     plan: TravelPlan
 
 
+class ReservationItem(BaseModel):
+    id: str = ""
+    type: Literal["flight", "train", "hotel", "restaurant", "ticket", "other"] = "other"
+    title: str
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+    location: str = ""
+    notes: str = ""
+    source: str = ""
+    confirmation_code: str = ""
+
+
 class TripWorkspace(BaseModel):
     id: str
     share_token: str
@@ -327,6 +339,7 @@ class TripWorkspace(BaseModel):
     request_brief: TripPlanningRequest
     manual_notes: str = ""
     locked_day_numbers: list[int] = Field(default_factory=list)
+    reservations: list[ReservationItem] = Field(default_factory=list)
     response_snapshot: PlanningResponse | None = None
 
 
@@ -335,6 +348,7 @@ class TripCreateRequest(BaseModel):
     response_snapshot: PlanningResponse | None = None
     manual_notes: str = ""
     locked_day_numbers: list[int] = Field(default_factory=list)
+    reservations: list[ReservationItem] = Field(default_factory=list)
     generate_response: bool = False
     include_debug: bool = False
 
@@ -343,6 +357,7 @@ class TripWorkspacePatchRequest(BaseModel):
     request_brief: TripPlanningRequest | None = None
     manual_notes: str | None = None
     locked_day_numbers: list[int] | None = None
+    reservations: list[ReservationItem] | None = None
     generate_response: bool = False
     include_debug: bool = False
 

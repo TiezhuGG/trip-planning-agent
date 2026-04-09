@@ -306,6 +306,26 @@ export interface PlanningResponse {
   plan: TravelPlan
 }
 
+export type ReservationType =
+  | 'flight'
+  | 'train'
+  | 'hotel'
+  | 'restaurant'
+  | 'ticket'
+  | 'other'
+
+export interface ReservationItem {
+  id: string
+  type: ReservationType
+  title: string
+  start_at: string | null
+  end_at: string | null
+  location: string
+  notes: string
+  source: string
+  confirmation_code: string
+}
+
 export interface TripWorkspace {
   id: string
   share_token: string
@@ -316,7 +336,8 @@ export interface TripWorkspace {
   request_brief: TripPlanningRequest
   manual_notes: string
   locked_day_numbers: number[]
-  response_snapshot: PlanningResponse
+  reservations: ReservationItem[]
+  response_snapshot: PlanningResponse | null
 }
 
 export interface TripCreateRequest {
@@ -324,6 +345,7 @@ export interface TripCreateRequest {
   response_snapshot?: PlanningResponse | null
   manual_notes?: string
   locked_day_numbers?: number[]
+  reservations?: ReservationItem[]
   generate_response?: boolean
   include_debug?: boolean
 }
@@ -332,6 +354,7 @@ export interface TripWorkspacePatchRequest {
   request_brief?: TripPlanningRequest | null
   manual_notes?: string | null
   locked_day_numbers?: number[] | null
+  reservations?: ReservationItem[] | null
   generate_response?: boolean
   include_debug?: boolean
 }

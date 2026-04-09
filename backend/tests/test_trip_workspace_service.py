@@ -20,6 +20,7 @@ from app.schemas.planning import (
     PlanningContext,
     PlanningResponse,
     ReplanRequest,
+    ReservationItem,
     TripCreateRequest,
     TripPlanningRequest,
     TripWorkspacePatchRequest,
@@ -34,6 +35,12 @@ def _make_store_path() -> Path:
     root = Path(__file__).resolve().parent / "_trip_workspace_testdata"
     root.mkdir(parents=True, exist_ok=True)
     return root / f"{uuid.uuid4().hex}.json"
+
+
+def _make_sqlite_store_path() -> Path:
+    root = Path(__file__).resolve().parent / "_trip_workspace_testdata"
+    root.mkdir(parents=True, exist_ok=True)
+    return root / f"{uuid.uuid4().hex}.db"
 
 
 def _build_request() -> TripPlanningRequest:
@@ -189,6 +196,83 @@ def test_trip_workspace_create_and_lookup_by_share_token() -> None:
     store_path.unlink(missing_ok=True)
 
 
+def test_trip_workspace_replan_includes_reservations_and_reason() -> None:
+    store_path = _make_store_path()
+    settings = Settings(
+        planner_trip_store_path=str(store_path),
+        planner_generate_cache_enabled=False,
+    )
+    planner = TravelPlannerService(settings)
+    service = TripWorkspaceService(settings, planner)
+    request = _build_request().model_copy(update={"notes": "Avoid crowded attractions."})
+    original = _build_response(
+        request=request,
+        generated_at=datetime.now(UTC),
+        suffix="old",
+    )
+    captured_request: TripPlanningRequest | None = None
+
+    async def fake_generate(
+        req: TripPlanningRequest,
+        generated_at: datetime,
+        include_debug: bool = True,
+    ) -> PlanningResponse:
+        nonlocal captured_request
+        _ = (generated_at, include_debug)
+        captured_request = req.model_copy(deep=True)
+        return _build_response(
+            request=req,
+            generated_at=datetime.now(UTC),
+            suffix="new",
+        )
+
+    planner.generate = fake_generate  # type: ignore[method-assign]
+    workspace = asyncio.run(
+        service.create_trip(
+            TripCreateRequest(
+                request_brief=request,
+                response_snapshot=original,
+                locked_day_numbers=[1],
+                manual_notes="Prefer indoor activities if the weather changes.",
+                reservations=[
+                    ReservationItem(
+                        id="dinner-anchor",
+                        type="restaurant",
+                        title="Riverfront Dinner",
+                        start_at=datetime(2026, 5, 2, 18, 30, tzinfo=UTC),
+                        location="The Bund",
+                        notes="Window seat booked.",
+                    )
+                ],
+            )
+        )
+    )
+
+    replanned = asyncio.run(
+        service.replan_trip(
+            workspace.id,
+            ReplanRequest(
+                scope="day",
+                day_numbers=[2],
+                reason="Rain is expected in the afternoon.",
+                include_debug=True,
+            ),
+        )
+    )
+
+    assert captured_request is not None
+    assert captured_request.notes is not None
+    assert "Avoid crowded attractions." in captured_request.notes
+    assert "Prefer indoor activities if the weather changes." in captured_request.notes
+    assert "title=Riverfront Dinner" in captured_request.notes
+    assert "Partial replanning instructions" in captured_request.notes
+    assert "regenerate_days=2" in captured_request.notes
+    assert "reason=Rain is expected in the afternoon." in captured_request.notes
+    assert replanned.response_snapshot is not None
+    assert replanned.response_snapshot.request_echo.notes == captured_request.notes
+    store_path.unlink(missing_ok=True)
+
+
 def test_trip_workspace_can_be_saved_as_draft_without_response() -> None:
     store_path = _make_store_path()
     settings = Settings(
@@ -212,6 +296,39 @@ def test_trip_workspace_can_be_saved_as_draft_without_response() -> None:
     assert workspace.status == "draft"
     assert workspace.response_snapshot is None
     assert workspace.manual_notes == "仅保存草稿"
+    store_path.unlink(missing_ok=True)
+
+
+def test_trip_workspace_sqlite_store_roundtrip() -> None:
+    store_path = _make_sqlite_store_path()
+    settings = Settings(
+        planner_trip_store_driver="auto",
+        planner_trip_store_path=str(store_path),
+        planner_generate_cache_enabled=False,
+    )
+    planner = TravelPlannerService(settings)
+    service = TripWorkspaceService(settings, planner)
+    request = _build_request()
+    response = _build_response(
+        request=request,
+        generated_at=datetime.now(UTC),
+        suffix="sqlite",
+    )
+
+    workspace = asyncio.run(
+        service.create_trip(
+            TripCreateRequest(
+                request_brief=request,
+                response_snapshot=response,
+                generate_response=True,
+            )
+        )
+    )
+    fetched = asyncio.run(service.get_trip(workspace.id))
+
+    assert fetched.id == workspace.id
+    assert fetched.response_snapshot is not None
+    assert fetched.response_snapshot.plan.title == "plan-sqlite"
     store_path.unlink(missing_ok=True)
 
 
@@ -250,6 +367,48 @@ def test_trip_workspace_patch_updates_notes_and_locked_days() -> None:
     assert updated.version == 2
     assert updated.manual_notes == "更新后的备注"
     assert updated.locked_day_numbers == [1, 2]
+    store_path.unlink(missing_ok=True)
+
+
+def test_trip_workspace_patch_persists_reservations() -> None:
+    store_path = _make_store_path()
+    settings = Settings(
+        planner_trip_store_path=str(store_path),
+        planner_generate_cache_enabled=False,
+    )
+    planner = TravelPlannerService(settings)
+    service = TripWorkspaceService(settings, planner)
+    request = _build_request()
+    workspace = asyncio.run(
+        service.create_trip(
+            TripCreateRequest(
+                request_brief=request,
+                generate_response=False,
+            )
+        )
+    )
+
+    updated = asyncio.run(
+        service.update_trip(
+            workspace.id,
+            TripWorkspacePatchRequest(
+                reservations=[
+                    ReservationItem(
+                        id="hotel-anchor",
+                        type="hotel",
+                        title="静安寺酒店",
+                        location="上海静安区",
+                        source="携程",
+                        confirmation_code="ABC123",
+                    )
+                ],
+            ),
+        )
+    )
+
+    assert len(updated.reservations) == 1
+    assert updated.reservations[0].title == "静安寺酒店"
+    assert updated.reservations[0].confirmation_code == "ABC123"
     store_path.unlink(missing_ok=True)
 
 
@@ -299,6 +458,236 @@ def test_trip_workspace_patch_can_generate_from_draft() -> None:
     assert updated.status == "ready"
     assert updated.response_snapshot is not None
     assert updated.response_snapshot.plan.title == "plan-draft-to-ready"
+    store_path.unlink(missing_ok=True)
+
+
+def test_trip_workspace_generation_includes_workspace_constraints() -> None:
+    store_path = _make_store_path()
+    settings = Settings(
+        planner_trip_store_path=str(store_path),
+        planner_generate_cache_enabled=False,
+    )
+    planner = TravelPlannerService(settings)
+    service = TripWorkspaceService(settings, planner)
+    request = _build_request().model_copy(update={"notes": "Original brief note"})
+    captured_request: TripPlanningRequest | None = None
+
+    async def fake_generate(
+        req: TripPlanningRequest,
+        generated_at: datetime,
+        include_debug: bool = True,
+    ) -> PlanningResponse:
+        nonlocal captured_request
+        _ = (generated_at, include_debug)
+        captured_request = req.model_copy(deep=True)
+        return _build_response(
+            request=req,
+            generated_at=datetime.now(UTC),
+            suffix="workspace-constraints",
+        )
+
+    planner.generate = fake_generate  # type: ignore[method-assign]
+
+    workspace = asyncio.run(
+        service.create_trip(
+            TripCreateRequest(
+                request_brief=request,
+                manual_notes="Keep the hotel near a metro station.",
+                reservations=[
+                    ReservationItem(
+                        id="hotel-anchor",
+                        type="hotel",
+                        title="Jingan Hotel",
+                        start_at=datetime(2026, 5, 1, 14, 0, tzinfo=UTC),
+                        end_at=datetime(2026, 5, 2, 12, 0, tzinfo=UTC),
+                        location="Jingan District",
+                        notes="Late check-in confirmed.",
+                        confirmation_code="ABC123",
+                    )
+                ],
+                generate_response=True,
+                include_debug=True,
+            )
+        )
+    )
+
+    assert captured_request is not None
+    assert captured_request.notes is not None
+    assert "Original brief note" in captured_request.notes
+    assert "Workspace notes that must be considered" in captured_request.notes
+    assert "Keep the hotel near a metro station." in captured_request.notes
+    assert "Fixed reservations and anchors" in captured_request.notes
+    assert "title=Jingan Hotel" in captured_request.notes
+    assert "trip_days=day1,day2" in captured_request.notes
+    assert "confirmation=ABC123" in captured_request.notes
+    assert "Scheduling rules:" in captured_request.notes
+    assert workspace.request_brief.notes == "Original brief note"
+    assert workspace.response_snapshot is not None
+    assert workspace.response_snapshot.request_echo.notes == captured_request.notes
+    store_path.unlink(missing_ok=True)
+
+
+def test_trip_workspace_rejects_reservation_with_invalid_time_range() -> None:
+    store_path = _make_store_path()
+    settings = Settings(
+        planner_trip_store_path=str(store_path),
+        planner_generate_cache_enabled=False,
+    )
+    planner = TravelPlannerService(settings)
+    service = TripWorkspaceService(settings, planner)
+    request = _build_request()
+
+    try:
+        asyncio.run(
+            service.create_trip(
+                TripCreateRequest(
+                    request_brief=request,
+                    reservations=[
+                        ReservationItem(
+                            id="bad-range",
+                            type="restaurant",
+                            title="Late Dinner",
+                            start_at=datetime(2026, 5, 1, 20, 0, tzinfo=UTC),
+                            end_at=datetime(2026, 5, 1, 18, 0, tzinfo=UTC),
+                        )
+                    ],
+                    generate_response=False,
+                )
+            )
+        )
+    except ValueError as exc:
+        assert "结束时间不能早于开始时间" in str(exc)
+    else:
+        raise AssertionError("expected invalid reservation time range to raise ValueError")
+    finally:
+        store_path.unlink(missing_ok=True)
+
+
+def test_trip_workspace_rejects_reservation_outside_trip_range() -> None:
+    store_path = _make_store_path()
+    settings = Settings(
+        planner_trip_store_path=str(store_path),
+        planner_generate_cache_enabled=False,
+    )
+    planner = TravelPlannerService(settings)
+    service = TripWorkspaceService(settings, planner)
+    request = _build_request()
+
+    try:
+        asyncio.run(
+            service.create_trip(
+                TripCreateRequest(
+                    request_brief=request,
+                    reservations=[
+                        ReservationItem(
+                            id="outside-range",
+                            type="hotel",
+                            title="Outside Hotel",
+                            start_at=datetime(2026, 5, 5, 14, 0, tzinfo=UTC),
+                            end_at=datetime(2026, 5, 6, 12, 0, tzinfo=UTC),
+                        )
+                    ],
+                    generate_response=False,
+                )
+            )
+        )
+    except ValueError as exc:
+        assert "不在本次行程日期范围内" in str(exc)
+    else:
+        raise AssertionError("expected out-of-range reservation to raise ValueError")
+    finally:
+        store_path.unlink(missing_ok=True)
+
+
+def test_trip_workspace_rejects_overlapping_non_hotel_reservations() -> None:
+    store_path = _make_store_path()
+    settings = Settings(
+        planner_trip_store_path=str(store_path),
+        planner_generate_cache_enabled=False,
+    )
+    planner = TravelPlannerService(settings)
+    service = TripWorkspaceService(settings, planner)
+    request = _build_request()
+
+    try:
+        asyncio.run(
+            service.create_trip(
+                TripCreateRequest(
+                    request_brief=request,
+                    reservations=[
+                        ReservationItem(
+                            id="museum-ticket",
+                            type="ticket",
+                            title="Museum Entry",
+                            start_at=datetime(2026, 5, 1, 14, 0, tzinfo=UTC),
+                            end_at=datetime(2026, 5, 1, 15, 30, tzinfo=UTC),
+                        ),
+                        ReservationItem(
+                            id="dinner-booking",
+                            type="restaurant",
+                            title="Dinner Booking",
+                            start_at=datetime(2026, 5, 1, 15, 0, tzinfo=UTC),
+                            end_at=datetime(2026, 5, 1, 16, 0, tzinfo=UTC),
+                        ),
+                    ],
+                    generate_response=False,
+                )
+            )
+        )
+    except ValueError as exc:
+        assert "时间重叠" in str(exc)
+    else:
+        raise AssertionError("expected overlapping reservations to raise ValueError")
+    finally:
+        store_path.unlink(missing_ok=True)
+
+
+def test_trip_workspace_generation_adds_reservation_audit_warning() -> None:
+    store_path = _make_store_path()
+    settings = Settings(
+        planner_trip_store_path=str(store_path),
+        planner_generate_cache_enabled=False,
+    )
+    planner = TravelPlannerService(settings)
+    service = TripWorkspaceService(settings, planner)
+    request = _build_request()
+
+    async def fake_generate(
+        req: TripPlanningRequest,
+        generated_at: datetime,
+        include_debug: bool = True,
+    ) -> PlanningResponse:
+        _ = (generated_at, include_debug)
+        return _build_response(
+            request=req,
+            generated_at=datetime.now(UTC),
+            suffix="audit-warning",
+        )
+
+    planner.generate = fake_generate  # type: ignore[method-assign]
+    workspace = asyncio.run(
+        service.create_trip(
+            TripCreateRequest(
+                request_brief=request,
+                reservations=[
+                    ReservationItem(
+                        id="river-cruise",
+                        type="ticket",
+                        title="Night River Cruise",
+                        start_at=datetime(2026, 5, 2, 19, 0, tzinfo=UTC),
+                        location="North Bund Pier",
+                    )
+                ],
+                generate_response=True,
+                include_debug=True,
+            )
+        )
+    )
+
+    assert workspace.response_snapshot is not None
+    warnings = workspace.response_snapshot.diagnostics.warnings
+    assert any("Reservation audit:" in item for item in warnings)
+    assert any("Night River Cruise" in item for item in warnings)
     store_path.unlink(missing_ok=True)
 
 
