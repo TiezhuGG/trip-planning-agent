@@ -96,9 +96,9 @@ function isDayReplanning(dayNumber: number) {
           每日详细行程
         </h2>
       </div>
-      <span class="rounded-full bg-[#eff5f8] px-4 py-2 text-sm text-[#48637b]"
-        >展开后可查看当日路线、住宿与费用</span
-      >
+      <span class="rounded-full bg-[#eff5f8] px-4 py-2 text-sm text-[#48637b]">
+        展开后可查看当日路线、住宿与费用
+      </span>
     </div>
     <div class="mt-5 space-y-4">
       <DailyItineraryCard

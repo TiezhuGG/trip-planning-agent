@@ -38,8 +38,8 @@ def _build_response(
                 InitialPlanDay(
                     day_number=1,
                     date=request.start_date.isoformat(),
-                    theme="主题",
-                    focus="核心区域",
+                    theme="Theme",
+                    focus="Core district",
                     must_visit=[],
                 )
             ],
@@ -70,18 +70,18 @@ def _build_response(
                 DayPlan(
                     day_number=1,
                     date=request.start_date.isoformat(),
-                    theme="主题",
-                    overview="概览",
-                    hotel_area="市中心",
-                    meals=[MealRecommendation(meal_type="lunch", venue_name="本地餐厅")],
+                    theme="Theme",
+                    overview="Overview",
+                    hotel_area="Downtown",
+                    meals=[MealRecommendation(meal_type="lunch", venue_name="Local Restaurant")],
                     activities=[
                         Activity(
                             start_time="09:00",
                             end_time="11:00",
-                            title="景点活动",
+                            title="Scenic Spot",
                             category="sightseeing",
-                            description="描述",
-                            location_name="景点",
+                            description="Description",
+                            location_name="Attraction",
                         )
                     ],
                 )
@@ -117,7 +117,7 @@ def test_planner_telemetry_collects_stage_percentiles() -> None:
         )
 
     service.coordinator.generate = fake_generate
-    request = TripPlanningRequest(destination="北京", start_date=date(2026, 5, 1), days=1)
+    request = TripPlanningRequest(destination="\u5317\u4eac", start_date=date(2026, 5, 1), days=1)
 
     asyncio.run(service.generate(request, generated_at=datetime.now(UTC), include_debug=True))
     asyncio.run(service.generate(request, generated_at=datetime.now(UTC), include_debug=True))
@@ -157,11 +157,11 @@ def test_generate_adds_slow_stage_warnings() -> None:
         )
 
     service.coordinator.generate = fake_generate
-    request = TripPlanningRequest(destination="上海", start_date=date(2026, 6, 1), days=1)
+    request = TripPlanningRequest(destination="\u4e0a\u6d77", start_date=date(2026, 6, 1), days=1)
     result = asyncio.run(service.generate(request, generated_at=datetime.now(UTC), include_debug=True))
 
-    assert any("阶段 compose 耗时 180ms" in item for item in result.meta.warnings)
-    assert any("总耗时 320ms" in item for item in result.meta.warnings)
+    assert any("\u9636\u6bb5 compose \u8017\u65f6 180ms" in item for item in result.meta.warnings)
+    assert any("\u603b\u8017\u65f6 320ms" in item for item in result.meta.warnings)
 
 
 def test_planner_telemetry_counts_cache_hits_without_double_pipeline_stats() -> None:
@@ -188,7 +188,7 @@ def test_planner_telemetry_counts_cache_hits_without_double_pipeline_stats() -> 
         )
 
     service.coordinator.generate = fake_generate
-    request = TripPlanningRequest(destination="杭州", start_date=date(2026, 7, 1), days=1)
+    request = TripPlanningRequest(destination="\u676d\u5dde", start_date=date(2026, 7, 1), days=1)
 
     first = asyncio.run(service.generate(request, generated_at=datetime.now(UTC), include_debug=True))
     second = asyncio.run(service.generate(request, generated_at=datetime.now(UTC), include_debug=True))

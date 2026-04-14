@@ -45,7 +45,7 @@ function mealLabel(type: string) {
 
 function formatCny(value: number, suffix = "") {
   if (!value) return "";
-  return `¥${value.toLocaleString()}${suffix}`;
+  return `￥${value.toLocaleString()}${suffix}`;
 }
 
 function shortAddress(value?: string | null) {

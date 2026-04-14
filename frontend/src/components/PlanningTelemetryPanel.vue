@@ -1,13 +1,17 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 
-import type {
-  PlanningTelemetry,
-  StageTimingPoint,
-  StageTimingStats,
-} from "../types/planning";
-
-type TimeWindow = "all" | "5m" | "1h";
+import type { PlanningTelemetry } from "../types/planning";
+import {
+  buildStageRows,
+  buildTelemetrySummary,
+  formatTelemetryDatetime,
+  sparklinePoints,
+  stageLabel,
+  TELEMETRY_PANEL_LABELS,
+  TIME_WINDOW_LABELS,
+  type TimeWindow,
+} from "./planningTelemetryPanelHelpers";
 
 const props = defineProps<{
   telemetry: PlanningTelemetry;
@@ -25,127 +29,30 @@ const slowOnly = ref(false);
 const timeWindow = ref<TimeWindow>("all");
 let copiedTimer: number | null = null;
 
-const windowLabel = computed(() => {
-  if (timeWindow.value === "5m") return "最近 5 分钟";
-  if (timeWindow.value === "1h") return "最近 1 小时";
-  return "全部";
-});
-
 const cacheHitRate = computed(() => {
   if (!props.telemetry.total_requests) return 0;
   return Math.round((props.telemetry.cache_hits / props.telemetry.total_requests) * 100);
 });
 
-const stageRows = computed(() => {
-  const keyword = filterText.value.trim().toLowerCase();
-  const rows = Object.entries(props.telemetry.stages ?? {}).map(([stage, stats]) => {
-    const points = pointsForWindow(stats);
-    const values = points.length ? points.map((item) => item.value_ms) : stats.recent_ms ?? [];
-    return {
-      stage,
-      stats,
-      points,
-      values,
-      slow: stageTone(stats) === "slow",
-    };
-  });
+const windowLabel = computed(() => TIME_WINDOW_LABELS[timeWindow.value]);
 
-  const filtered = rows.filter((row) => {
-    if (slowOnly.value && !row.slow) return false;
-    if (!keyword) return true;
-    return stageLabel(row.stage).toLowerCase().includes(keyword);
-  });
+const stageRows = computed(() =>
+  buildStageRows(
+    props.telemetry,
+    filterText.value,
+    slowOnly.value,
+    timeWindow.value,
+  ),
+);
 
-  filtered.sort((left, right) => {
-    const leftSlow = left.slow ? 1 : 0;
-    const rightSlow = right.slow ? 1 : 0;
-    if (leftSlow !== rightSlow) return rightSlow - leftSlow;
-    return right.stats.p95_ms - left.stats.p95_ms;
-  });
-
-  return filtered;
-});
-
-const telemetrySummary = computed(() => {
-  const lines: string[] = [];
-  lines.push("# Planner Telemetry Report");
-  lines.push("");
-  lines.push(`- Time: ${formatDatetime(props.telemetry.updated_at)}`);
-  lines.push(`- Range: ${windowLabel.value}`);
-  lines.push(`- Requests: ${props.telemetry.total_requests}`);
-  lines.push(`- Cache Hit: ${props.telemetry.cache_hits} (${cacheHitRate.value}%)`);
-  lines.push(`- Window Size: ${props.telemetry.window_size}`);
-  lines.push("");
-
-  const slowStages = stageRows.value.filter((item) => item.slow).slice(0, 5);
-  if (slowStages.length) {
-    lines.push("## Slow Stages (Top)");
-    for (const item of slowStages) {
-      lines.push(
-        `- ${stageLabel(item.stage)}: p95=${item.stats.p95_ms}ms, max=${item.stats.max_ms}ms, last=${item.stats.last_ms}ms`,
-      );
-    }
-    lines.push("");
-  }
-
-  lines.push("## Stage Table");
-  lines.push("");
-  lines.push("| Stage | Count | P50 | P95 | Max | Last |");
-  lines.push("| --- | ---: | ---: | ---: | ---: | ---: |");
-  for (const item of stageRows.value) {
-    lines.push(
-      `| ${stageLabel(item.stage)} | ${item.stats.count} | ${item.stats.p50_ms}ms | ${item.stats.p95_ms}ms | ${item.stats.max_ms}ms | ${item.stats.last_ms}ms |`,
-    );
-  }
-  if (!stageRows.value.length) {
-    lines.push("| (no data) | 0 | 0ms | 0ms | 0ms | 0ms |");
-  }
-  return lines.join("\n");
-});
-
-function stageTone(stats: StageTimingStats): "slow" | "normal" {
-  if (stats.p95_ms >= 8000 || stats.max_ms >= 10000) return "slow";
-  return "normal";
-}
-
-function stageLabel(name: string): string {
-  return name.replace(/_/g, " ");
-}
-
-function formatDatetime(value: string | null): string {
-  if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString();
-}
-
-function pointsForWindow(stats: StageTimingStats): StageTimingPoint[] {
-  const points = stats.recent_points ?? [];
-  if (timeWindow.value === "all") return points;
-
-  const now = Date.now();
-  const windowMs = timeWindow.value === "5m" ? 5 * 60 * 1000 : 60 * 60 * 1000;
-  const cutoff = now - windowMs;
-  return points.filter((item) => {
-    const ts = new Date(item.at).getTime();
-    return !Number.isNaN(ts) && ts >= cutoff;
-  });
-}
-
-function sparklinePoints(values: number[]): string {
-  if (!values.length) return "";
-  if (values.length === 1) return "0,20 120,20";
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const span = Math.max(1, max - min);
-  return values
-    .map((value, index) => {
-      const x = (index / (values.length - 1)) * 120;
-      const y = 22 - ((value - min) / span) * 18;
-      return `${x.toFixed(2)},${y.toFixed(2)}`;
-    })
-    .join(" ");
-}
+const telemetrySummary = computed(() =>
+  buildTelemetrySummary(
+    props.telemetry,
+    stageRows.value,
+    timeWindow.value,
+    cacheHitRate.value,
+  ),
+);
 
 async function copySummary() {
   try {
@@ -179,7 +86,7 @@ function exportMarkdown() {
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
         <div class="text-xs uppercase tracking-[0.28em] text-[#6f7f92]">Telemetry</div>
-        <h3 class="mt-2 text-xl font-semibold text-ink">阶段耗时统计</h3>
+        <h3 class="mt-2 text-xl font-semibold text-ink">{{ TELEMETRY_PANEL_LABELS.title }}</h3>
       </div>
       <div class="flex items-center gap-2">
         <button
@@ -187,21 +94,21 @@ function exportMarkdown() {
           class="rounded-full border border-[#c9d6e2] bg-white px-4 py-2 text-sm text-[#35516b]"
           @click="copySummary"
         >
-          {{ copied ? "已复制" : "复制摘要" }}
+          {{ copied ? TELEMETRY_PANEL_LABELS.copyDone : TELEMETRY_PANEL_LABELS.copyIdle }}
         </button>
         <button
           type="button"
           class="rounded-full border border-[#c9d6e2] bg-white px-4 py-2 text-sm text-[#35516b]"
           @click="exportMarkdown"
         >
-          导出 Markdown
+          {{ TELEMETRY_PANEL_LABELS.exportMarkdown }}
         </button>
         <button
           type="button"
           class="rounded-full border border-[#c9d6e2] bg-[#f5f8fb] px-4 py-2 text-sm text-[#35516b]"
           @click="emit('refresh')"
         >
-          {{ loading ? "刷新中..." : "刷新" }}
+          {{ loading ? TELEMETRY_PANEL_LABELS.refreshLoading : TELEMETRY_PANEL_LABELS.refreshIdle }}
         </button>
       </div>
     </div>
@@ -215,28 +122,28 @@ function exportMarkdown() {
 
     <div class="mt-4 grid gap-3 sm:grid-cols-3">
       <label class="text-sm text-slate-600">
-        <span class="mb-1 block text-xs text-slate-500">时间窗口</span>
+        <span class="mb-1 block text-xs text-slate-500">{{ TELEMETRY_PANEL_LABELS.timeWindow }}</span>
         <select
           v-model="timeWindow"
           class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
         >
-          <option value="all">全部</option>
-          <option value="5m">最近 5 分钟</option>
-          <option value="1h">最近 1 小时</option>
+          <option value="all">{{ TIME_WINDOW_LABELS.all }}</option>
+          <option value="5m">{{ TIME_WINDOW_LABELS["5m"] }}</option>
+          <option value="1h">{{ TIME_WINDOW_LABELS["1h"] }}</option>
         </select>
       </label>
       <label class="text-sm text-slate-600">
-        <span class="mb-1 block text-xs text-slate-500">Stage 过滤</span>
+        <span class="mb-1 block text-xs text-slate-500">{{ TELEMETRY_PANEL_LABELS.stageFilter }}</span>
         <input
           v-model="filterText"
           type="text"
-          placeholder="例如 route / compose"
+          :placeholder="TELEMETRY_PANEL_LABELS.stageFilterPlaceholder"
           class="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
         />
       </label>
       <label class="flex items-end gap-2 text-sm text-slate-600">
         <input v-model="slowOnly" type="checkbox" class="h-4 w-4 rounded border-slate-300" />
-        <span>仅看慢阶段</span>
+        <span>{{ TELEMETRY_PANEL_LABELS.slowOnly }}</span>
       </label>
     </div>
 
@@ -255,12 +162,12 @@ function exportMarkdown() {
       </div>
       <div class="rounded-[22px] border border-[#e3ebf2] bg-[#f5f8fb] px-4 py-4 text-sm text-slate-600">
         <div class="text-xs text-slate-500">Window</div>
-        <div class="mt-2 font-medium text-ink">{{ telemetry.window_size }}</div>
+        <div class="mt-2 font-medium text-ink">{{ windowLabel }}</div>
       </div>
     </div>
 
     <div class="mt-4 text-xs text-slate-500">
-      最近更新时间：{{ formatDatetime(telemetry.updated_at) }}
+      {{ TELEMETRY_PANEL_LABELS.updatedAt }}{{ formatTelemetryDatetime(telemetry.updated_at) }}
     </div>
 
     <div
@@ -320,7 +227,9 @@ function exportMarkdown() {
             <td class="px-3 py-2 text-slate-600">{{ item.stats.last_ms }}ms</td>
           </tr>
           <tr v-if="!stageRows.length" class="border-t border-slate-100">
-            <td class="px-3 py-3 text-slate-500" colspan="7">暂无阶段统计数据</td>
+            <td class="px-3 py-3 text-slate-500" colspan="7">
+              {{ TELEMETRY_PANEL_LABELS.noData }}
+            </td>
           </tr>
         </tbody>
       </table>

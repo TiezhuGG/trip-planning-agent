@@ -18,7 +18,7 @@ const emit = defineEmits<{
         <div class="text-xs uppercase tracking-[0.28em] text-[#6f7f92]">
           Developer
         </div>
-        <h3 class="mt-2 text-xl font-semibold text-ink">集成预检查</h3>
+        <h3 class="mt-2 text-xl font-semibold text-ink">集成预检</h3>
       </div>
       <button
         type="button"

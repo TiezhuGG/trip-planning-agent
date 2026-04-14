@@ -1,6 +1,9 @@
-﻿__pycache__/
+__pycache__/
 *.pyc
 .pytest_cache/
+.pytest-tmp/
+.venv/
+.venv_local/
 venv/
 .env
 .DS_Store
@@ -8,5 +11,6 @@ node_modules/
 dist/
 coverage/
 /docs/**
-!/docs/github-actions-auto-deploy.md
+!/docs/*.md
 backend/scripts/
+backend/tests/_trip_workspace_testdata/*.db

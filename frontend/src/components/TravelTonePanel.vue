@@ -10,7 +10,7 @@ defineProps<{
 <template>
   <article class="rounded-[36px] border border-[#d8e3ee] bg-white p-6 shadow-card">
     <div class="text-xs uppercase tracking-[0.28em] text-[#6f7f92]">Travel Tone</div>
-    <h3 class="mt-3 text-2xl font-semibold text-ink">这趟行程会偏向什么感觉</h3>
+    <h3 class="mt-3 text-2xl font-semibold text-ink">这趟行程会偏向什么感觉？</h3>
     <div class="mt-5 space-y-3 text-sm leading-7 text-slate-600">
       <div class="rounded-[24px] border border-[#e4ebf2] bg-[#f5f8fb] px-4 py-4">
         重点会围绕

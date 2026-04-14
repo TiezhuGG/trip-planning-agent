@@ -1,9 +1,9 @@
-﻿<script setup lang="ts">
-import type { PlanningResponse } from '../types/planning'
+<script setup lang="ts">
+import type { PlanningResponse } from "../types/planning";
 
 defineProps<{
-  result: PlanningResponse
-}>()
+  result: PlanningResponse;
+}>();
 </script>
 
 <template>

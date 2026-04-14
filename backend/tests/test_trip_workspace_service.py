@@ -265,11 +265,91 @@ def test_trip_workspace_replan_includes_reservations_and_reason() -> None:
     assert "Avoid crowded attractions." in captured_request.notes
     assert "Prefer indoor activities if the weather changes." in captured_request.notes
     assert "title=Riverfront Dinner" in captured_request.notes
+    assert "anchor_days=day2" in captured_request.notes
+    assert "requirement=keep_time_window_clear_and_place_anchor_explicitly" in captured_request.notes
     assert "Partial replanning instructions" in captured_request.notes
     assert "regenerate_days=2" in captured_request.notes
     assert "reason=Rain is expected in the afternoon." in captured_request.notes
     assert replanned.response_snapshot is not None
     assert replanned.response_snapshot.request_echo.notes == captured_request.notes
+    store_path.unlink(missing_ok=True)
+
+
+def test_trip_workspace_replan_filters_unrelated_reservations() -> None:
+    store_path = _make_store_path()
+    settings = Settings(
+        planner_trip_store_path=str(store_path),
+        planner_generate_cache_enabled=False,
+    )
+    planner = TravelPlannerService(settings)
+    service = TripWorkspaceService(settings, planner)
+    request = _build_request().model_copy(update={"days": 3})
+    original = _build_response(
+        request=request,
+        generated_at=datetime.now(UTC),
+        suffix="old",
+    )
+    captured_request: TripPlanningRequest | None = None
+
+    async def fake_generate(
+        req: TripPlanningRequest,
+        generated_at: datetime,
+        include_debug: bool = True,
+    ) -> PlanningResponse:
+        nonlocal captured_request
+        _ = (generated_at, include_debug)
+        captured_request = req.model_copy(deep=True)
+        return _build_response(
+            request=req,
+            generated_at=datetime.now(UTC),
+            suffix="filtered-replan",
+        )
+
+    planner.generate = fake_generate  # type: ignore[method-assign]
+    workspace = asyncio.run(
+        service.create_trip(
+            TripCreateRequest(
+                request_brief=request,
+                response_snapshot=original,
+                reservations=[
+                    ReservationItem(
+                        id="day-one-ticket",
+                        type="ticket",
+                        title="Day 1 Museum Entry",
+                        start_at=datetime(2026, 5, 1, 9, 0, tzinfo=UTC),
+                        end_at=datetime(2026, 5, 1, 11, 0, tzinfo=UTC),
+                        location="People's Square",
+                    ),
+                    ReservationItem(
+                        id="day-three-dinner",
+                        type="restaurant",
+                        title="Day 3 Skyline Dinner",
+                        start_at=datetime(2026, 5, 3, 18, 30, tzinfo=UTC),
+                        end_at=datetime(2026, 5, 3, 20, 0, tzinfo=UTC),
+                        location="Lujiazui",
+                    ),
+                ],
+            )
+        )
+    )
+
+    asyncio.run(
+        service.replan_trip(
+            workspace.id,
+            ReplanRequest(
+                scope="day",
+                day_numbers=[3],
+                include_debug=True,
+            ),
+        )
+    )
+
+    assert captured_request is not None
+    assert captured_request.notes is not None
+    assert "Day 3 Skyline Dinner" in captured_request.notes
+    assert "anchor_days=day3" in captured_request.notes
+    assert "Day 1 Museum Entry" not in captured_request.notes
+    assert "anchor_days=day1" not in captured_request.notes
     store_path.unlink(missing_ok=True)
 
 
@@ -520,6 +600,9 @@ def test_trip_workspace_generation_includes_workspace_constraints() -> None:
     assert "title=Jingan Hotel" in captured_request.notes
     assert "trip_days=day1,day2" in captured_request.notes
     assert "confirmation=ABC123" in captured_request.notes
+    assert "Reservation scheduling directives:" in captured_request.notes
+    assert "stay_anchor_days=day1,day2" in captured_request.notes
+    assert "requirement=keep_stay_aligned_with_reserved_hotel" in captured_request.notes
     assert "Scheduling rules:" in captured_request.notes
     assert workspace.request_brief.notes == "Original brief note"
     assert workspace.response_snapshot is not None
