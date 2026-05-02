@@ -23,6 +23,7 @@ RUN set -eux; \
     command -v amap-mcp-server >/dev/null
 
 COPY app ./app
+COPY data ./data
 
 EXPOSE 8000
 

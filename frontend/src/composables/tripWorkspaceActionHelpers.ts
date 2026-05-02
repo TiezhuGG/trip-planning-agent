@@ -32,7 +32,8 @@ export function ensureCurrentWorkspace(
   if (currentTrip.value) {
     return currentTrip.value;
   }
-  openNotice("warning", "工作区尚未就绪", [message]);
+
+  openNotice("warning", "当前还没有可操作的工作区", [message]);
   return null;
 }
 
@@ -49,6 +50,7 @@ export function buildWorkspacePatchPayload(options: {
   };
 }): TripWorkspacePatchRequest {
   const { currentTrip, tripNotes, showDevPanels, patch } = options;
+
   return {
     ...patch,
     ...buildWorkspaceStatePayload({
@@ -78,6 +80,7 @@ export function buildPersistedWorkspacePayload(options: {
     responseSnapshot,
     generateResponse,
   } = options;
+
   return {
     request_brief: requestBrief,
     response_snapshot: responseSnapshot,
@@ -100,17 +103,21 @@ export function normalizeDraftRequest(options: {
 }): { ok: true; request: TripPlanningRequest } | { ok: false; message: string } {
   const { form, mustVisitText, diningText, isChineseCityName, splitText } = options;
   const normalizedDestination = form.destination.trim();
+
   if (!isChineseCityName(normalizedDestination)) {
     return {
       ok: false,
-      message: "目的地仅支持中文城市名，例如：上海、北京市。",
+      message: "目的地目前只支持中文城市名，例如：上海、北京市。",
     };
   }
+
   const mustVisit = splitText(mustVisitText);
   const diningPreferences = splitText(diningText);
+
   form.must_visit = mustVisit;
   form.dining_preferences = diningPreferences;
   form.destination = normalizedDestination;
+
   return {
     ok: true,
     request: buildTripPlanningRequestPayload({

@@ -13,6 +13,18 @@ export {
   summarizeDayReadiness,
 } from "./tripWorkspaceDayReadinessHelpers";
 export type {
+  DayGapType,
+  DayGapRepairPayload,
+  DayReadinessAction,
   DayReadinessItem,
   DayReadinessSummary,
 } from "./tripWorkspaceDayReadinessHelpers";
+
+export {
+  buildDeparturePrecheckItems,
+  summarizeDeparturePrecheck,
+} from "./tripWorkspaceDeparturePrecheckHelpers";
+export type {
+  DeparturePrecheckItem,
+  DeparturePrecheckSummary,
+} from "./tripWorkspaceDeparturePrecheckHelpers";

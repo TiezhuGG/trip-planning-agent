@@ -14,6 +14,7 @@ const props = defineProps<{
   weatherForecasts: DailyForecast[];
   reservations?: ReservationItem[];
   expandedDays: number[];
+  highlightedDays?: number[];
   lockedDays?: number[];
   replanningDays?: number[];
 }>();
@@ -81,6 +82,10 @@ function isDayLocked(dayNumber: number) {
 function isDayReplanning(dayNumber: number) {
   return props.replanningDays?.includes(dayNumber) ?? false;
 }
+
+function isDayHighlighted(dayNumber: number) {
+  return props.highlightedDays?.includes(dayNumber) ?? false;
+}
 </script>
 
 <template>
@@ -112,6 +117,7 @@ function isDayReplanning(dayNumber: number) {
         :reservations="getDayReservations(day)"
         :locked="isDayLocked(day.day_number)"
         :replanning="isDayReplanning(day.day_number)"
+        :highlighted="isDayHighlighted(day.day_number)"
         @toggle="toggleDay"
         @toggle-lock="emit('toggle-lock', $event)"
         @replan-day="emit('replan-day', $event)"

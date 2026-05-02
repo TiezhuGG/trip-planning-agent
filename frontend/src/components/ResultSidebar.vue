@@ -12,8 +12,8 @@ defineProps<{
 <template>
   <aside class="space-y-6">
     <article class="rounded-[36px] border border-[#d8e3ee] bg-white p-6 shadow-card sm:p-7">
-      <div class="text-xs uppercase tracking-[0.28em] text-[#6f7f92]">Stay & Budget</div>
-      <h2 class="mt-3 text-2xl font-semibold text-ink">住宿与预算</h2>
+      <div class="text-xs uppercase tracking-[0.28em] text-[#6f7f92]">住宿与预算</div>
+      <h2 class="mt-3 text-2xl font-semibold text-ink">住宿与预算建议</h2>
       <div class="mt-5 grid gap-3">
         <div
           v-for="card in budgetCards"
@@ -38,7 +38,7 @@ defineProps<{
     </article>
 
     <article class="rounded-[36px] border border-[#d8e3ee] bg-white p-6 shadow-card sm:p-7">
-      <div class="text-xs uppercase tracking-[0.28em] text-[#6f7f92]">City Notes</div>
+      <div class="text-xs uppercase tracking-[0.28em] text-[#6f7f92]">城市提示</div>
       <h2 class="mt-3 text-2xl font-semibold text-ink">城市提醒与打包建议</h2>
       <div class="mt-5 space-y-3">
         <div
@@ -64,8 +64,8 @@ defineProps<{
       v-if="showDevPanels"
       class="rounded-[36px] border border-[#d8e3ee] bg-white p-6 shadow-card sm:p-7"
     >
-      <div class="text-xs uppercase tracking-[0.28em] text-[#6f7f92]">Developer</div>
-      <h2 class="mt-3 text-2xl font-semibold text-ink">MCP 与地图集成状态</h2>
+      <div class="text-xs uppercase tracking-[0.28em] text-[#6f7f92]">开发环境</div>
+      <h2 class="mt-3 text-2xl font-semibold text-ink">服务与地图集成状态</h2>
       <div class="mt-5 rounded-[22px] border border-[#e3ebf2] bg-[#f5f8fb] px-4 py-4 text-sm text-slate-600">
         <div class="font-medium text-ink">MCP 启动命令</div>
         <div class="mt-2 break-all rounded-[18px] bg-white px-3 py-2 text-xs shadow-sm">
@@ -73,13 +73,13 @@ defineProps<{
         </div>
       </div>
       <div class="mt-4 rounded-[22px] border border-[#e3ebf2] bg-[#f5f8fb] px-4 py-4 text-sm text-slate-600">
-        <div class="font-medium text-ink">LLM 配置</div>
+        <div class="font-medium text-ink">模型配置</div>
         <div class="mt-3 rounded-[18px] bg-white px-3 py-3 text-xs shadow-sm">
           <div class="font-medium text-ink">
-            {{ integrationStatus.llm_model || "未配置模型名" }}
+            {{ integrationStatus.llm_model || "未配置模型名称" }}
           </div>
           <div class="mt-2 break-all text-slate-600">
-            {{ integrationStatus.llm_base_url || "未配置 Base URL" }}
+            {{ integrationStatus.llm_base_url || "未配置服务地址" }}
           </div>
         </div>
       </div>

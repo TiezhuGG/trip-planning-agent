@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { formatShortDateTimeZhCn } from "../utils/workspaceFormatting";
+
 withDefaults(
   defineProps<{
     inputSummary: Array<{ label: string; value: string }>;
@@ -6,12 +8,19 @@ withDefaults(
     progressLabel: string;
     loading: boolean;
     savingDraft?: boolean;
+    canSaveDraft: boolean;
     canSubmit: boolean;
+    saveDraftHint: string;
+    submitHint: string;
+    localDraftSavedAt?: string;
+    localDraftRestored?: boolean;
     compact?: boolean;
   }>(),
   {
     compact: false,
     savingDraft: false,
+    localDraftSavedAt: "",
+    localDraftRestored: false,
   },
 );
 
@@ -19,13 +28,17 @@ const emit = defineEmits<{
   (event: "submit"): void;
   (event: "save-draft"): void;
 }>();
+
+function formatDateTime(value: string) {
+  return formatShortDateTimeZhCn(value);
+}
 </script>
 
 <template>
   <article class="rounded-[36px] border border-[#d8e3ee] bg-white p-6 shadow-card sm:p-8">
     <div :class="compact ? 'space-y-5' : 'grid gap-6 xl:grid-cols-[0.98fr_1.02fr] xl:items-end'">
       <div>
-        <div class="text-xs uppercase tracking-[0.28em] text-[#6f7f92]">Planner</div>
+        <div class="text-xs uppercase tracking-[0.28em] text-[#6f7f92]">规划面板</div>
         <h2 class="mt-3 text-2xl font-semibold text-ink sm:text-[30px]">
           开始规划和本次输入摘要
         </h2>
@@ -61,10 +74,26 @@ const emit = defineEmits<{
               : "一键生成后，结果页会把地图、每日路线和餐饮天气整合到一起。"
           }}
         </div>
+        <div
+          class="mt-4 rounded-[18px] border border-white/14 bg-white/8 px-4 py-3 text-xs leading-5 text-white/74"
+        >
+          {{ submitHint }}
+        </div>
+        <div
+          v-if="localDraftSavedAt"
+          class="mt-3 rounded-[18px] border border-white/10 bg-black/10 px-4 py-3 text-[11px] leading-5 text-white/70"
+        >
+          {{
+            localDraftRestored
+              ? `已恢复浏览器草稿，最近自动保存于 ${formatDateTime(localDraftSavedAt)}。`
+              : `浏览器草稿最近自动保存于 ${formatDateTime(localDraftSavedAt)}。`
+          }}
+        </div>
         <button
           type="button"
           class="mt-6 w-full rounded-[22px] border border-white/16 bg-white px-5 py-4 text-sm font-semibold text-[#16324d] transition hover:bg-[#edf3f8] disabled:cursor-not-allowed disabled:border-white/8 disabled:bg-white/55 disabled:text-[#6d8294]"
           :disabled="loading || !canSubmit"
+          :title="canSubmit ? '开始生成本次行程' : submitHint"
           @click="emit('submit')"
         >
           {{ loading ? "规划中..." : "开始规划" }}
@@ -72,7 +101,8 @@ const emit = defineEmits<{
         <button
           type="button"
           class="mt-3 w-full rounded-[22px] border border-white/16 bg-transparent px-5 py-4 text-sm font-semibold text-white transition hover:bg-white/10 disabled:cursor-not-allowed disabled:border-white/8 disabled:text-white/40"
-          :disabled="loading || savingDraft || !canSubmit"
+          :disabled="loading || savingDraft || !canSaveDraft"
+          :title="canSaveDraft ? '先保存当前输入，稍后继续编辑' : saveDraftHint"
           @click="emit('save-draft')"
         >
           {{ savingDraft ? "草稿保存中..." : "先保存为草稿" }}

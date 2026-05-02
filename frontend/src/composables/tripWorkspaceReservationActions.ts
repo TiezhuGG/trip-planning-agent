@@ -7,6 +7,9 @@ import {
   type NoticeTone,
 } from "./tripWorkspaceActionHelpers";
 
+const WAIT_FOR_WORKSPACE_MESSAGE = "请先等待当前工作区保存完成后再继续操作。";
+const SAVE_OR_GENERATE_MESSAGE = "请先保存草稿或生成行程，然后再维护预订信息。";
+
 export function createTripWorkspaceReservationActions(options: {
   currentTrip: Ref<TripWorkspace | null>;
   tripNotes: Ref<string>;
@@ -15,7 +18,7 @@ export function createTripWorkspaceReservationActions(options: {
     manual_notes?: string | null;
     locked_day_numbers?: number[] | null;
     reservations?: ReservationItem[] | null;
-  }) => Promise<void>;
+  }) => Promise<TripWorkspace | null>;
 }) {
   const { currentTrip, tripNotes, openNotice, saveWorkspacePatch } = options;
 
@@ -23,19 +26,22 @@ export function createTripWorkspaceReservationActions(options: {
     const workspace = ensureCurrentWorkspace(
       currentTrip,
       openNotice,
-      "请先等待行程结果保存完成。",
+      WAIT_FOR_WORKSPACE_MESSAGE,
     );
     if (!workspace) {
       return;
     }
 
-    const locked = new Set(workspace.locked_day_numbers);
-    if (locked.has(dayNumber)) locked.delete(dayNumber);
-    else locked.add(dayNumber);
+    const lockedDayNumbers = new Set(workspace.locked_day_numbers);
+    if (lockedDayNumbers.has(dayNumber)) {
+      lockedDayNumbers.delete(dayNumber);
+    } else {
+      lockedDayNumbers.add(dayNumber);
+    }
 
     await saveWorkspacePatch({
       manual_notes: tripNotes.value,
-      locked_day_numbers: [...locked],
+      locked_day_numbers: [...lockedDayNumbers],
       reservations: workspace.reservations,
     });
   }
@@ -44,7 +50,7 @@ export function createTripWorkspaceReservationActions(options: {
     const workspace = ensureCurrentWorkspace(
       currentTrip,
       openNotice,
-      "请先保存草稿或生成行程。",
+      SAVE_OR_GENERATE_MESSAGE,
     );
     if (!workspace) {
       return;
@@ -57,6 +63,7 @@ export function createTripWorkspaceReservationActions(options: {
         id: createReservationId(),
       },
     ];
+
     await saveWorkspacePatch({
       manual_notes: tripNotes.value,
       locked_day_numbers: workspace.locked_day_numbers,
@@ -68,7 +75,7 @@ export function createTripWorkspaceReservationActions(options: {
     const workspace = ensureCurrentWorkspace(
       currentTrip,
       openNotice,
-      "请先保存草稿或生成行程。",
+      SAVE_OR_GENERATE_MESSAGE,
     );
     if (!workspace) {
       return;

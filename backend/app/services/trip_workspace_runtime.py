@@ -10,7 +10,9 @@ from app.schemas.planning import (
     TripWorkspace,
 )
 from app.services.trip_workspace_reservations import (
+    apply_reservation_fallback_anchors,
     audit_generated_reservations,
+    build_reservation_coverage_diagnostics,
     build_effective_request,
 )
 
@@ -41,6 +43,22 @@ class TripWorkspaceRuntimeMixin:
             generated_at=datetime.now(timezone.utc),
             include_debug=include_debug,
         )
+        response, fallback_warnings, auto_anchored_days = apply_reservation_fallback_anchors(
+            request,
+            reservations or [],
+            response,
+        )
+        if fallback_warnings:
+            response = self._merge_runtime_warnings(
+                response=response,
+                warnings=fallback_warnings,
+            )
+        response = self._merge_reservation_coverage(
+            request=request,
+            reservations=reservations or [],
+            response=response,
+            auto_anchored_days=auto_anchored_days,
+        )
         return self._merge_reservation_audit_warnings(
             request=request,
             reservations=reservations or [],
@@ -62,15 +80,26 @@ class TripWorkspaceRuntimeMixin:
         if not audit_warnings:
             return response
 
+        return self._merge_runtime_warnings(response=response, warnings=audit_warnings)
+
+    def _merge_runtime_warnings(
+        self,
+        *,
+        response: PlanningResponse,
+        warnings: list[str],
+    ) -> PlanningResponse:
+        if not warnings:
+            return response
+
         merged_meta = response.meta.model_copy(
             update={
-                "warnings": list(dict.fromkeys([*response.meta.warnings, *audit_warnings])),
+                "warnings": list(dict.fromkeys([*response.meta.warnings, *warnings])),
             },
             deep=True,
         )
         merged_diagnostics = response.diagnostics.model_copy(
             update={
-                "warnings": list(dict.fromkeys([*response.diagnostics.warnings, *audit_warnings])),
+                "warnings": list(dict.fromkeys([*response.diagnostics.warnings, *warnings])),
             },
             deep=True,
         )
@@ -81,6 +110,26 @@ class TripWorkspaceRuntimeMixin:
             },
             deep=True,
         )
+
+    def _merge_reservation_coverage(
+        self,
+        *,
+        request: TripPlanningRequest,
+        reservations: list[ReservationItem],
+        response: PlanningResponse,
+        auto_anchored_days: dict[str, list[int]] | None = None,
+    ) -> PlanningResponse:
+        coverage = build_reservation_coverage_diagnostics(
+            request=request,
+            reservations=reservations,
+            response=response,
+            auto_anchored_days=auto_anchored_days,
+        )
+        merged_diagnostics = response.diagnostics.model_copy(
+            update={"reservation_coverage": coverage},
+            deep=True,
+        )
+        return response.model_copy(update={"diagnostics": merged_diagnostics}, deep=True)
 
     async def _read_trip(self, trip_id: str) -> TripWorkspace | None:
         async with self._lock:

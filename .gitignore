@@ -14,3 +14,8 @@ coverage/
 !/docs/*.md
 backend/scripts/
 backend/tests/_trip_workspace_testdata/*.db
+backend/data/pet_feeder_state.json
+backend/data/pet_feeder.db
+backend/data/pet_feeder.db-shm
+backend/data/pet_feeder.db-wal
+backend/tests/_pet_feeder_tmp/

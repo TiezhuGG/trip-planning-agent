@@ -1,0 +1,321 @@
+{
+  "968408baaed54c0ea7747bc01ade35b9": {
+    "id": "968408baaed54c0ea7747bc01ade35b9",
+    "share_token": "pkFjKoO9Ex4v",
+    "status": "ready",
+    "version": 2,
+    "created_at": "2026-04-15T01:58:50.360052Z",
+    "updated_at": "2026-04-15T01:58:50.363097Z",
+    "request_brief": {
+      "origin": null,
+      "destination": "上海",
+      "start_date": "2026-05-01",
+      "days": 2,
+      "interests": [
+        "自然风光"
+      ],
+      "must_visit": [],
+      "pace": "balanced",
+      "budget_level": "comfort",
+      "transport_preferences": [],
+      "hotel_style": "市中心舒适型",
+      "dining_preferences": [],
+      "travelers": {
+        "adults": 2,
+        "children": 0,
+        "seniors": 0
+      },
+      "notes": null
+    },
+    "manual_notes": "",
+    "locked_day_numbers": [],
+    "reservations": [],
+    "last_replan_summary": {
+      "created_at": "2026-04-15T01:58:50.363084Z",
+      "scope": "day",
+      "repair_mode": "replace",
+      "repair_gap": null,
+      "target_days": [
+        1
+      ],
+      "title": "第 1 天已重新生成",
+      "items": [
+        {
+          "day_number": 1,
+          "highlights": [
+            "住宿更新为：Updated Stay",
+            "更新午餐：餐厅1-replace-fresh",
+            "活动更新为：Updated Activity"
+          ],
+          "changes": [
+            {
+              "kind": "stay",
+              "label": "住宿",
+              "before": "黄浦",
+              "after": "Updated Stay"
+            },
+            {
+              "kind": "meal",
+              "label": "午餐",
+              "before": "餐厅1-replace-current",
+              "after": "餐厅1-replace-fresh"
+            },
+            {
+              "kind": "activity",
+              "label": "活动",
+              "before": "活动1-replace-current",
+              "after": "Updated Activity"
+            }
+          ]
+        }
+      ]
+    },
+    "last_precheck_summary": null,
+    "response_snapshot": {
+      "status": "success",
+      "generated_at": "2026-04-15T01:58:50.362897Z",
+      "request_echo": {
+        "origin": null,
+        "destination": "上海",
+        "start_date": "2026-05-01",
+        "days": 2,
+        "interests": [
+          "自然风光"
+        ],
+        "must_visit": [],
+        "pace": "balanced",
+        "budget_level": "comfort",
+        "transport_preferences": [],
+        "hotel_style": "市中心舒适型",
+        "dining_preferences": [],
+        "travelers": {
+          "adults": 2,
+          "children": 0,
+          "seniors": 0
+        },
+        "notes": null
+      },
+      "initial_plan": {
+        "summary": "seed-replace-fresh",
+        "days": [
+          {
+            "day_number": 1,
+            "date": "2026-05-01",
+            "theme": "主题1-replace-fresh",
+            "focus": "外滩",
+            "must_visit": [],
+            "poi_query": "",
+            "dining_query": ""
+          },
+          {
+            "day_number": 2,
+            "date": "2026-05-02",
+            "theme": "主题2-replace-fresh",
+            "focus": "徐汇",
+            "must_visit": [],
+            "poi_query": "",
+            "dining_query": ""
+          }
+        ]
+      },
+      "planning_context": {
+        "destination": "上海",
+        "attractions": [],
+        "restaurants": [],
+        "hotels": [],
+        "routes": [],
+        "weather": {
+          "overview": "",
+          "temperature_range": "",
+          "suggestions": [],
+          "daily_forecasts": []
+        }
+      },
+      "agent_trace": [
+        {
+          "agent_name": "planner_seed_agent",
+          "success": true,
+          "summary": "",
+          "used_llm": false,
+          "used_tools": [],
+          "warnings": []
+        }
+      ],
+      "tool_trace": [],
+      "meta": {
+        "llm_used": true,
+        "fallback_used": false,
+        "model_name": "mock",
+        "warnings": [
+          "已按请求重新生成 第 1 天，原因: 重新调整当天安排。"
+        ],
+        "stage_timings_ms": {
+          "total": 20
+        }
+      },
+      "diagnostics": {
+        "llm": [],
+        "mcp": [],
+        "warnings": [
+          "已按请求重新生成 第 1 天，原因: 重新调整当天安排。"
+        ],
+        "fallbacks_used": [],
+        "reservation_coverage": [],
+        "error_code": ""
+      },
+      "map_config": {
+        "provider": "amap",
+        "enabled": false,
+        "js_api_key": null,
+        "security_js_code": null,
+        "center": null
+      },
+      "integration_status": {
+        "mcp_enabled": false,
+        "mcp_connected": false,
+        "mcp_command": "",
+        "llm_enabled": false,
+        "llm_reachable": false,
+        "llm_model": "",
+        "llm_base_url": "",
+        "available_tools": [],
+        "resolved_tools": {},
+        "missing_tools": [],
+        "map_rendering_enabled": false,
+        "map_js_key_configured": false,
+        "security_js_code_configured": false,
+        "warnings": []
+      },
+      "plan": {
+        "title": "plan-replace-fresh",
+        "summary": "summary-replace-fresh",
+        "weather_summary": "",
+        "best_booking_tip": "tip",
+        "estimated_budget": {
+          "currency": "CNY",
+          "accommodation": "¥210/人",
+          "transport": "¥45/人",
+          "food": "¥85/人",
+          "tickets": "¥65/人",
+          "extras": "¥20/人",
+          "total_estimate": "¥425/人"
+        },
+        "stay_recommendations": [],
+        "city_tips": [],
+        "packing_list": [],
+        "days": [
+          {
+            "day_number": 1,
+            "date": "2026-05-01",
+            "theme": "第1天-replace-fresh",
+            "overview": "overview-1-replace-fresh",
+            "hotel_area": "黄浦",
+            "stay": {
+              "area": "",
+              "hotel_name": "Updated Stay",
+              "reason": "",
+              "room_nightly_cost_cny": 0,
+              "poi": null
+            },
+            "cost_breakdown": {
+              "accommodation_per_person_cny": 100,
+              "transport_per_person_cny": 20,
+              "food_per_person_cny": 40,
+              "tickets_per_person_cny": 30,
+              "extras_per_person_cny": 10,
+              "total_per_person_cny": 200
+            },
+            "transport_tips": [],
+            "meals": [
+              {
+                "meal_type": "lunch",
+                "venue_name": "餐厅1-replace-fresh",
+                "cuisine": "",
+                "suggestion": "",
+                "estimated_cost": "",
+                "estimated_cost_cny": 40,
+                "poi": null
+              }
+            ],
+            "activities": [
+              {
+                "start_time": "09:00",
+                "end_time": "10:30",
+                "title": "Updated Activity",
+                "category": "sightseeing",
+                "description": "desc",
+                "location_name": "外滩",
+                "transport_from_previous": null,
+                "expected_cost": null,
+                "ticket_cost_cny": 30,
+                "booking_tip": null,
+                "poi": null
+              }
+            ],
+            "weather": null,
+            "route_summary": null,
+            "route_summaries": [],
+            "route_segments": [],
+            "map_pois": [],
+            "fallbacks": []
+          },
+          {
+            "day_number": 2,
+            "date": "2026-05-02",
+            "theme": "第2天-replace-current",
+            "overview": "overview-2-replace-current",
+            "hotel_area": "徐汇",
+            "stay": {
+              "area": "",
+              "hotel_name": "",
+              "reason": "",
+              "room_nightly_cost_cny": 0,
+              "poi": null
+            },
+            "cost_breakdown": {
+              "accommodation_per_person_cny": 110,
+              "transport_per_person_cny": 25,
+              "food_per_person_cny": 45,
+              "tickets_per_person_cny": 35,
+              "extras_per_person_cny": 10,
+              "total_per_person_cny": 225
+            },
+            "transport_tips": [],
+            "meals": [
+              {
+                "meal_type": "dinner",
+                "venue_name": "餐厅2-replace-current",
+                "cuisine": "",
+                "suggestion": "",
+                "estimated_cost": "",
+                "estimated_cost_cny": 45,
+                "poi": null
+              }
+            ],
+            "activities": [
+              {
+                "start_time": "14:00",
+                "end_time": "16:00",
+                "title": "活动2-replace-current",
+                "category": "explore",
+                "description": "desc",
+                "location_name": "徐汇",
+                "transport_from_previous": null,
+                "expected_cost": null,
+                "ticket_cost_cny": 35,
+                "booking_tip": null,
+                "poi": null
+              }
+            ],
+            "weather": null,
+            "route_summary": null,
+            "route_summaries": [],
+            "route_segments": [],
+            "map_pois": [],
+            "fallbacks": []
+          }
+        ]
+      }
+    }
+  }
+}

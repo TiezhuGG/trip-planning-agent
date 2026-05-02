@@ -1,20 +1,28 @@
 from datetime import datetime, timezone
 from functools import lru_cache
+from typing import Literal
+from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 
 from app.config import get_settings
 from app.schemas.planning import (
     IntegrationStatus,
+    PlanningJob,
+    PlanningJobSummary,
     PlanningResponse,
     PlanningTelemetry,
+    PrecheckRefreshRequest,
     ReplanRequest,
     TripCreateRequest,
     TripPlanningRequest,
+    TripSummary,
     TripWorkspace,
     TripWorkspacePatchRequest,
 )
 from app.services.planner import TravelPlannerService
+from app.services.planning_job_store import create_planning_job_store
+from app.services.planning_jobs import PlanningJobService
 from app.services.trip_workspace import TripWorkspaceService
 
 router = APIRouter(tags=["planning"])
@@ -30,6 +38,15 @@ def get_trip_workspace_service() -> TripWorkspaceService:
     return TripWorkspaceService(get_settings(), get_planner_service())
 
 
+@lru_cache
+def get_planning_job_service() -> PlanningJobService:
+    return PlanningJobService(
+        get_planner_service(),
+        get_trip_workspace_service(),
+        store=create_planning_job_store(get_settings()),
+    )
+
+
 @router.get("/plans/integrations/status", response_model=IntegrationStatus)
 async def get_integration_status(
     refresh: bool = Query(default=False),
@@ -41,7 +58,7 @@ async def get_integration_status(
             status_code=500,
             detail={
                 "code": "INTEGRATION_STATUS_ERROR",
-                "message": "集成状态检查失败，请稍后重试。",
+                "message": "Failed to load integration status.",
             },
         ) from exc
 
@@ -55,7 +72,7 @@ async def get_planning_telemetry() -> PlanningTelemetry:
             status_code=500,
             detail={
                 "code": "PLANNING_TELEMETRY_ERROR",
-                "message": "性能统计读取失败，请稍后重试。",
+                "message": "Failed to load planning telemetry.",
             },
         ) from exc
 
@@ -72,14 +89,21 @@ async def generate_plan(
             include_debug=debug,
         )
     except Exception as exc:
-        code, message, status_code = _classify_generation_error(exc)
-        raise HTTPException(
-            status_code=status_code,
-            detail={
-                "code": code,
-                "message": message,
-            },
-        ) from exc
+        raise_generation_error(exc)
+
+
+@router.post("/jobs/plans/generate", response_model=PlanningJob, status_code=202)
+async def start_generate_plan_job(
+    payload: TripPlanningRequest,
+    debug: bool = Query(default=False),
+) -> PlanningJob:
+    try:
+        return await get_planning_job_service().start_generate_plan_job(
+            payload,
+            include_debug=debug,
+        )
+    except Exception as exc:
+        raise_generation_error(exc)
 
 
 @router.post("/trips", response_model=TripWorkspace)
@@ -101,7 +125,23 @@ async def create_trip(
             status_code=500,
             detail={
                 "code": "TRIP_CREATE_ERROR",
-                "message": "保存行程工作区失败，请稍后重试。",
+                "message": "Failed to create trip workspace.",
+            },
+        ) from exc
+
+
+@router.get("/trips", response_model=list[TripSummary])
+async def list_recent_trips(
+    limit: int = Query(default=10, ge=1, le=50),
+) -> list[TripSummary]:
+    try:
+        return await get_trip_workspace_service().list_recent_trips(limit=limit)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "TRIP_LIST_ERROR",
+                "message": "Failed to load recent trip workspaces.",
             },
         ) from exc
 
@@ -113,13 +153,7 @@ async def get_trip(
     try:
         return await get_trip_workspace_service().get_trip(trip_id)
     except KeyError as exc:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "code": "TRIP_NOT_FOUND",
-                "message": "未找到对应的行程工作区。",
-            },
-        ) from exc
+        raise_trip_not_found_error(exc)
 
 
 @router.get("/trips/share/{share_token}", response_model=TripWorkspace)
@@ -133,7 +167,7 @@ async def get_trip_by_share_token(
             status_code=404,
             detail={
                 "code": "TRIP_SHARE_NOT_FOUND",
-                "message": "分享链接已失效或对应行程不存在。",
+                "message": "Shared trip workspace not found.",
             },
         ) from exc
 
@@ -146,13 +180,7 @@ async def update_trip(
     try:
         return await get_trip_workspace_service().update_trip(trip_id, payload)
     except KeyError as exc:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "code": "TRIP_NOT_FOUND",
-                "message": "未找到对应的行程工作区。",
-            },
-        ) from exc
+        raise_trip_not_found_error(exc)
     except ValueError as exc:
         raise HTTPException(
             status_code=422,
@@ -162,14 +190,28 @@ async def update_trip(
             },
         ) from exc
     except Exception as exc:
-        code, message, status_code = _classify_generation_error(exc)
+        raise_generation_error(exc)
+
+
+@router.post("/jobs/trips/{trip_id}/update", response_model=PlanningJob, status_code=202)
+async def start_update_trip_job(
+    trip_id: str,
+    payload: TripWorkspacePatchRequest,
+) -> PlanningJob:
+    try:
+        return await get_planning_job_service().start_update_trip_job(trip_id, payload)
+    except KeyError as exc:
+        raise_trip_not_found_error(exc)
+    except ValueError as exc:
         raise HTTPException(
-            status_code=status_code,
+            status_code=422,
             detail={
-                "code": code,
-                "message": message,
+                "code": "TRIP_UPDATE_VALIDATION_ERROR",
+                "message": str(exc),
             },
         ) from exc
+    except Exception as exc:
+        raise_generation_error(exc)
 
 
 @router.post("/trips/{trip_id}/replan", response_model=TripWorkspace)
@@ -180,13 +222,7 @@ async def replan_trip(
     try:
         return await get_trip_workspace_service().replan_trip(trip_id, payload)
     except KeyError as exc:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "code": "TRIP_NOT_FOUND",
-                "message": "未找到对应的行程工作区。",
-            },
-        ) from exc
+        raise_trip_not_found_error(exc)
     except ValueError as exc:
         raise HTTPException(
             status_code=422,
@@ -196,14 +232,178 @@ async def replan_trip(
             },
         ) from exc
     except Exception as exc:
-        code, message, status_code = _classify_generation_error(exc)
+        raise_generation_error(exc)
+
+
+@router.post("/jobs/trips/{trip_id}/replan", response_model=PlanningJob, status_code=202)
+async def start_replan_trip_job(
+    trip_id: str,
+    payload: ReplanRequest,
+) -> PlanningJob:
+    try:
+        return await get_planning_job_service().start_replan_trip_job(trip_id, payload)
+    except KeyError as exc:
+        raise_trip_not_found_error(exc)
+    except ValueError as exc:
         raise HTTPException(
-            status_code=status_code,
+            status_code=422,
             detail={
-                "code": code,
-                "message": message,
+                "code": "TRIP_REPLAN_VALIDATION_ERROR",
+                "message": str(exc),
             },
         ) from exc
+    except Exception as exc:
+        raise_generation_error(exc)
+
+
+@router.post("/trips/{trip_id}/precheck", response_model=TripWorkspace)
+async def refresh_trip_precheck(
+    trip_id: str,
+    payload: PrecheckRefreshRequest,
+) -> TripWorkspace:
+    try:
+        return await get_trip_workspace_service().refresh_precheck(trip_id, payload)
+    except KeyError as exc:
+        raise_trip_not_found_error(exc)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "TRIP_PRECHECK_VALIDATION_ERROR",
+                "message": str(exc),
+            },
+        ) from exc
+    except Exception as exc:
+        raise_generation_error(exc)
+
+
+@router.post("/jobs/trips/{trip_id}/precheck", response_model=PlanningJob, status_code=202)
+async def start_trip_precheck_job(
+    trip_id: str,
+    payload: PrecheckRefreshRequest,
+) -> PlanningJob:
+    try:
+        return await get_planning_job_service().start_precheck_trip_job(trip_id, payload)
+    except KeyError as exc:
+        raise_trip_not_found_error(exc)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "TRIP_PRECHECK_VALIDATION_ERROR",
+                "message": str(exc),
+            },
+        ) from exc
+    except Exception as exc:
+        raise_generation_error(exc)
+
+
+@router.get("/jobs", response_model=list[PlanningJobSummary])
+async def list_planning_jobs(
+    limit: int = Query(default=10, ge=1, le=50),
+    trip_id: str | None = Query(default=None),
+) -> list[PlanningJobSummary]:
+    try:
+        return await get_planning_job_service().list_jobs(limit=limit, trip_id=trip_id)
+    except Exception as exc:
+        raise_generation_error(exc)
+
+
+@router.get("/jobs/{job_id}", response_model=PlanningJob)
+async def get_planning_job(
+    job_id: str,
+) -> PlanningJob:
+    try:
+        return await get_planning_job_service().get_job(job_id)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "JOB_NOT_FOUND",
+                "message": "Planning job not found.",
+            },
+        ) from exc
+    except Exception as exc:
+        raise_generation_error(exc)
+
+
+@router.post("/trips/{trip_id}/share/revoke", response_model=TripWorkspace)
+async def revoke_trip_share(
+    trip_id: str,
+) -> TripWorkspace:
+    try:
+        return await get_trip_workspace_service().revoke_share_link(trip_id)
+    except KeyError as exc:
+        raise_trip_not_found_error(exc)
+
+
+@router.post("/trips/{trip_id}/share/regenerate", response_model=TripWorkspace)
+async def regenerate_trip_share(
+    trip_id: str,
+) -> TripWorkspace:
+    try:
+        return await get_trip_workspace_service().regenerate_share_link(trip_id)
+    except KeyError as exc:
+        raise_trip_not_found_error(exc)
+
+
+@router.get("/trips/{trip_id}/export/ics")
+async def export_trip_calendar(
+    trip_id: str,
+    scope: Literal["full", "reservations", "itinerary"] = "full",
+) -> Response:
+    try:
+        result = await get_trip_workspace_service().export_trip_calendar(trip_id, scope=scope)
+        return Response(
+            content=result.content,
+            media_type="text/calendar",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="{result.filename}"; '
+                    f"filename*=UTF-8''{quote(result.filename)}"
+                ),
+                "Cache-Control": "no-store",
+            },
+        )
+    except KeyError as exc:
+        raise_trip_not_found_error(exc)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "TRIP_EXPORT_VALIDATION_ERROR",
+                "message": str(exc),
+            },
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "TRIP_EXPORT_ERROR",
+                "message": "Failed to export calendar.",
+            },
+        ) from exc
+
+
+def raise_trip_not_found_error(exc: KeyError) -> None:
+    raise HTTPException(
+        status_code=404,
+        detail={
+            "code": "TRIP_NOT_FOUND",
+            "message": "Trip workspace not found.",
+        },
+    ) from exc
+
+
+def raise_generation_error(exc: Exception) -> None:
+    code, message, status_code = _classify_generation_error(exc)
+    raise HTTPException(
+        status_code=status_code,
+        detail={
+            "code": code,
+            "message": message,
+        },
+    ) from exc
 
 
 def _classify_generation_error(exc: Exception) -> tuple[str, str, int]:
@@ -213,47 +413,49 @@ def _classify_generation_error(exc: Exception) -> tuple[str, str, int]:
         "validationerror",
         "tripplanningrequest",
         "field required",
+        "only supports chinese city names",
+        "destination",
         "目的地仅支持中文城市名",
-        "仅支持中文城市名",
+        "中文城市名",
     )
 
-    if any(marker.lower() in message for marker in validation_markers):
-        return "VALIDATION_ERROR", "请求参数不合法，请检查目的地和出行信息。", 422
-    if "destination" in message and "城市名" in raw_message:
-        return "VALIDATION_ERROR", "请求参数不合法，请检查目的地和出行信息。", 422
+    if any(marker in message for marker in validation_markers):
+        return "VALIDATION_ERROR", "Request validation failed.", 422
     if "429" in message or "ratelimit" in message or "setlimitexceeded" in message:
-        return "LLM_RATE_LIMIT", "大模型服务当前限流，系统暂时无法完成本次规划，请稍后重试。", 503
+        return "LLM_RATE_LIMIT", "Planner service is rate limited.", 503
+
     mcp_related_markers = (
         "mcpprotocolerror",
-        "mcp 工具映射不完整",
         "missing tools",
-        "高德 web service key",
+        "web service key",
         "amap_maps_api_key",
+        "工具映射不完整",
+        "工具映射异常",
+        "缺少工具映射",
     )
     if any(marker in message for marker in mcp_related_markers):
         return _classify_mcp_error(message)
     if "timeout" in message or "connect" in message or "network" in message:
-        return "NETWORK_ERROR", "当前网络或外部服务连接异常，请稍后重试。", 503
-    return "INTERNAL_ERROR", "生成旅行计划失败，请稍后重试。", 500
+        return "NETWORK_ERROR", "Network or upstream service error.", 503
+    return "INTERNAL_ERROR", "Plan generation failed.", 500
 
 
 def _classify_mcp_error(message: str) -> tuple[str, str, int]:
     startup_markers = (
         "mcp command is empty",
-        "mcp 启动命令不存在",
-        "系统找不到指定的文件",
         "filenotfounderror",
         "notimplementederror",
         "windows selector",
     )
     mapping_markers = (
-        "工具映射不完整",
-        "缺少工具映射",
         "missing tools",
+        "tool mapping",
+        "工具映射不完整",
+        "工具映射异常",
+        "缺少工具映射",
     )
     key_markers = (
-        "未配置高德 web service key",
-        "缺少高德 web service key",
+        "web service key",
         "amap_maps_api_key",
     )
     timeout_markers = (
@@ -271,13 +473,13 @@ def _classify_mcp_error(message: str) -> tuple[str, str, int]:
     )
 
     if any(marker in message for marker in startup_markers):
-        return "MCP_STARTUP_ERROR", "地图服务进程启动失败，请检查 MCP 启动命令与运行环境。", 503
+        return "MCP_STARTUP_ERROR", "Map service startup failed.", 503
     if any(marker in message for marker in mapping_markers):
-        return "MCP_TOOL_MAPPING_ERROR", "地图服务工具映射不完整，请检查 MCP 工具配置。", 503
+        return "MCP_TOOL_MAPPING_ERROR", "Map service tool mapping is incomplete.", 503
     if any(marker in message for marker in key_markers):
-        return "AMAP_KEY_MISSING", "地图服务密钥未正确配置，请检查 AMAP_MAPS_API_KEY。", 503
+        return "AMAP_KEY_MISSING", "Map service key is missing.", 503
     if any(marker in message for marker in rate_limit_markers):
-        return "MCP_RATE_LIMIT", "地图服务当前限流，暂时无法生成稳定行程。", 503
+        return "MCP_RATE_LIMIT", "Map service is rate limited.", 503
     if any(marker in message for marker in timeout_markers):
-        return "MCP_TIMEOUT", "地图服务连接超时，请稍后重试。", 503
-    return "MCP_PROTOCOL_ERROR", "地图服务连接异常，暂时无法生成稳定行程。", 503
+        return "MCP_TIMEOUT", "Map service request timed out.", 503
+    return "MCP_PROTOCOL_ERROR", "Map service communication failed.", 503

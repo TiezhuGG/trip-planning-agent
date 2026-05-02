@@ -1,20 +1,20 @@
 <script setup lang="ts">
-import { computed } from "vue"
+import { computed } from "vue";
 
-import { useAmapMapRuntime } from "../composables/useAmapMapRuntime"
-import type { DayPOI, MapRenderConfig, RouteSummary } from "../types/planning"
+import { useAmapMapRuntime } from "../composables/useAmapMapRuntime";
+import type { DayPOI, MapRenderConfig, RouteSummary } from "../types/planning";
 
 const props = defineProps<{
-  mapConfig: MapRenderConfig
-  pois: DayPOI[]
-  routes: RouteSummary[]
-}>()
+  mapConfig: MapRenderConfig;
+  pois: DayPOI[];
+  routes: RouteSummary[];
+}>();
 
 const { mapRoot, loading, errorMessage } = useAmapMapRuntime({
   mapConfig: computed(() => props.mapConfig),
   pois: computed(() => props.pois),
   routes: computed(() => props.routes),
-})
+});
 </script>
 
 <template>

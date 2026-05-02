@@ -4,13 +4,17 @@ import IntegrationPrecheckPanel from "./IntegrationPrecheckPanel.vue";
 import PlanningTelemetryPanel from "./PlanningTelemetryPanel.vue";
 import PlannerLaunchPanel from "./PlannerLaunchPanel.vue";
 import PlannerRequestForm from "./PlannerRequestForm.vue";
+import RecentTripListPanel from "./RecentTripListPanel.vue";
 import TravelTonePanel from "./TravelTonePanel.vue";
 
 import type {
   IntegrationStatus,
   PlanningTelemetry,
+  TripSummary,
   TripPlanningRequest,
 } from "../types/planning";
+import type { PlannerInputCheck } from "../composables/usePlannerDerivedState";
+import { formatDateTimeZhCn } from "../utils/workspaceFormatting";
 
 type PlannerOption<T> = {
   label: string;
@@ -20,6 +24,8 @@ type PlannerOption<T> = {
 const props = defineProps<{
   summaryTags: string[];
   isEditingWorkspace: boolean;
+  localDraftRestored: boolean;
+  localDraftSavedAt: string;
   editingTripVersion: number | null;
   form: TripPlanningRequest;
   interestOptions: string[];
@@ -33,7 +39,14 @@ const props = defineProps<{
   progressLabel: string;
   loading: boolean;
   draftSaving: boolean;
-  destinationValid: boolean;
+  recentTrips: TripSummary[];
+  recentTripsLoading: boolean;
+  recentTripsError: string;
+  planningChecks: PlannerInputCheck[];
+  canSaveDraft: boolean;
+  canSubmit: boolean;
+  saveDraftHint: string;
+  submitHint: string;
   currentIntegrationStatus: IntegrationStatus;
   integrationLoading: boolean;
   telemetry: PlanningTelemetry;
@@ -51,15 +64,59 @@ const diningText = defineModel<string>("diningText", { required: true });
 const emit = defineEmits<{
   (event: "reset"): void;
   (event: "submit"): void;
+  (event: "dismiss-local-draft"): void;
+  (event: "open-recent-trip", tripId: string): void;
   (event: "save-draft"): void;
+  (event: "refresh-recent-trips"): void;
   (event: "refresh-integration"): void;
   (event: "refresh-telemetry"): void;
 }>();
+
+function formatDateTime(value: string) {
+  return formatDateTimeZhCn(value);
+}
 </script>
 
 <template>
   <section class="flex min-h-[calc(100vh-3rem)] flex-col justify-center gap-8">
     <LandingHero :summary-tags="summaryTags" />
+
+    <article
+      v-if="localDraftRestored && !isEditingWorkspace"
+      class="rounded-[30px] border border-sky-100 bg-[linear-gradient(135deg,_rgba(231,244,255,0.94),_rgba(247,251,255,0.96))] px-6 py-5 shadow-card"
+    >
+      <div class="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <div class="text-xs uppercase tracking-[0.24em] text-sky-600">
+            浏览器草稿
+          </div>
+          <div class="mt-2 text-lg font-semibold text-ink">已恢复上次未提交的输入</div>
+          <div class="mt-2 text-sm text-slate-600">
+            {{
+              localDraftSavedAt
+                ? `最近自动保存于 ${formatDateTime(localDraftSavedAt)}，你可以直接继续编辑。`
+                : "检测到浏览器里有未提交输入，已帮你恢复到当前表单。"
+            }}
+          </div>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <button
+            type="button"
+            class="rounded-full border border-slate-200 bg-white px-5 py-3 text-sm shadow-sm"
+            @click="emit('dismiss-local-draft')"
+          >
+            继续编辑
+          </button>
+          <button
+            type="button"
+            class="rounded-full border border-slate-200 bg-white px-5 py-3 text-sm shadow-sm"
+            @click="emit('reset')"
+          >
+            清空重填
+          </button>
+        </div>
+      </div>
+    </article>
 
     <article
       v-if="isEditingWorkspace && editingTripVersion !== null"
@@ -68,11 +125,11 @@ const emit = defineEmits<{
       <div class="flex flex-wrap items-center justify-between gap-4">
         <div>
           <div class="text-xs uppercase tracking-[0.24em] text-[#6f7f92]">
-            Editing Workspace
+            正在编辑工作区
           </div>
           <div class="mt-2 text-lg font-semibold text-ink">正在编辑当前行程工作区</div>
           <div class="mt-2 text-sm text-slate-600">
-            继续提交会更新当前 trip，而不是创建新的工作区。当前版本：v{{ editingTripVersion }}
+            继续提交会更新当前工作区，而不是创建新的工作区。当前版本：v{{ editingTripVersion }}
           </div>
         </div>
         <button
@@ -97,6 +154,9 @@ const emit = defineEmits<{
         :hotel-options="hotelOptions"
         :pace-options="paceOptions"
         :budget-options="budgetOptions"
+        :planning-checks="planningChecks"
+        :can-submit="canSubmit"
+        :submit-hint="submitHint"
         :pace-label="paceLabel"
         :toggle-selection="toggleSelection"
       />
@@ -113,10 +173,22 @@ const emit = defineEmits<{
           :progress-label="progressLabel"
           :loading="loading"
           :saving-draft="draftSaving"
-          :can-submit="destinationValid"
+          :can-save-draft="canSaveDraft"
+          :can-submit="canSubmit"
+          :save-draft-hint="saveDraftHint"
+          :submit-hint="submitHint"
+          :local-draft-saved-at="localDraftSavedAt"
+          :local-draft-restored="localDraftRestored"
           compact
           @submit="emit('submit')"
           @save-draft="emit('save-draft')"
+        />
+        <RecentTripListPanel
+          :trips="recentTrips"
+          :loading="recentTripsLoading"
+          :error="recentTripsError"
+          @open="(tripId) => emit('open-recent-trip', tripId)"
+          @refresh="emit('refresh-recent-trips')"
         />
         <IntegrationPrecheckPanel
           v-if="showDevPanels"

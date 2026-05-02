@@ -1,0 +1,358 @@
+{
+  "87368a02f99e443b8ae3737f1812f84a": {
+    "id": "87368a02f99e443b8ae3737f1812f84a",
+    "share_token": "Sab-LQGj2H96",
+    "status": "ready",
+    "version": 1,
+    "created_at": "2026-04-15T00:05:17.680693Z",
+    "updated_at": "2026-04-15T00:05:17.680693Z",
+    "request_brief": {
+      "origin": null,
+      "destination": "上海",
+      "start_date": "2026-05-01",
+      "days": 2,
+      "interests": [
+        "自然风光"
+      ],
+      "must_visit": [],
+      "pace": "balanced",
+      "budget_level": "comfort",
+      "transport_preferences": [],
+      "hotel_style": "市中心舒适型",
+      "dining_preferences": [],
+      "travelers": {
+        "adults": 2,
+        "children": 0,
+        "seniors": 0
+      },
+      "notes": "Original brief note"
+    },
+    "manual_notes": "Keep the hotel near a metro station.",
+    "locked_day_numbers": [],
+    "reservations": [
+      {
+        "id": "hotel-anchor",
+        "type": "hotel",
+        "title": "Jingan Hotel",
+        "start_at": "2026-05-01T14:00:00Z",
+        "end_at": "2026-05-02T12:00:00Z",
+        "location": "Jingan District",
+        "notes": "Late check-in confirmed.",
+        "source": "",
+        "confirmation_code": "ABC123"
+      }
+    ],
+    "last_replan_summary": null,
+    "response_snapshot": {
+      "status": "success",
+      "generated_at": "2026-04-15T00:05:17.678840Z",
+      "request_echo": {
+        "origin": null,
+        "destination": "上海",
+        "start_date": "2026-05-01",
+        "days": 2,
+        "interests": [
+          "自然风光"
+        ],
+        "must_visit": [],
+        "pace": "balanced",
+        "budget_level": "comfort",
+        "transport_preferences": [],
+        "hotel_style": "市中心舒适型",
+        "dining_preferences": [],
+        "travelers": {
+          "adults": 2,
+          "children": 0,
+          "seniors": 0
+        },
+        "notes": "Original brief note\n\nWorkspace notes that must be considered:\nKeep the hotel near a metro station.\n\nFixed reservations and anchors that must be respected when generating the itinerary:\n- type=hotel; title=Jingan Hotel; trip_days=day1,day2; time=2026-05-01 14:00 -> 2026-05-02 12:00; location=Jingan District; confirmation=ABC123; notes=Late check-in confirmed.\n\nReservation scheduling directives:\n- stay_anchor_days=day1,day2; title=Jingan Hotel; location=Jingan District; check_in=2026-05-01 14:00; check_in_slot=afternoon; check_out=2026-05-02 12:00; check_out_slot=lunch; requirement=keep_stay_aligned_with_reserved_hotel\nScheduling rules: on the listed trip_days, keep the reservation time window available, place nearby meals/activities around the anchor, and avoid long cross-city detours that would cause conflicts."
+      },
+      "initial_plan": {
+        "summary": "seed-workspace-constraints",
+        "days": [
+          {
+            "day_number": 1,
+            "date": "2026-05-01",
+            "theme": "主题1-workspace-constraints",
+            "focus": "外滩",
+            "must_visit": [],
+            "poi_query": "",
+            "dining_query": ""
+          },
+          {
+            "day_number": 2,
+            "date": "2026-05-02",
+            "theme": "主题2-workspace-constraints",
+            "focus": "徐汇",
+            "must_visit": [],
+            "poi_query": "",
+            "dining_query": ""
+          }
+        ]
+      },
+      "planning_context": {
+        "destination": "上海",
+        "attractions": [],
+        "restaurants": [],
+        "hotels": [],
+        "routes": [],
+        "weather": {
+          "overview": "",
+          "temperature_range": "",
+          "suggestions": [],
+          "daily_forecasts": []
+        }
+      },
+      "agent_trace": [
+        {
+          "agent_name": "planner_seed_agent",
+          "success": true,
+          "summary": "",
+          "used_llm": false,
+          "used_tools": [],
+          "warnings": []
+        }
+      ],
+      "tool_trace": [],
+      "meta": {
+        "llm_used": true,
+        "fallback_used": false,
+        "model_name": "mock",
+        "warnings": [
+          "Reservation fallback: “Jingan Hotel” was auto-anchored into day 1.",
+          "Reservation fallback: “Jingan Hotel” was auto-anchored into day 2."
+        ],
+        "stage_timings_ms": {
+          "total": 20
+        }
+      },
+      "diagnostics": {
+        "llm": [],
+        "mcp": [],
+        "warnings": [
+          "Reservation fallback: “Jingan Hotel” was auto-anchored into day 1.",
+          "Reservation fallback: “Jingan Hotel” was auto-anchored into day 2."
+        ],
+        "fallbacks_used": [],
+        "error_code": ""
+      },
+      "map_config": {
+        "provider": "amap",
+        "enabled": false,
+        "js_api_key": null,
+        "security_js_code": null,
+        "center": null
+      },
+      "integration_status": {
+        "mcp_enabled": false,
+        "mcp_connected": false,
+        "mcp_command": "",
+        "llm_enabled": false,
+        "llm_reachable": false,
+        "llm_model": "",
+        "llm_base_url": "",
+        "available_tools": [],
+        "resolved_tools": {},
+        "missing_tools": [],
+        "map_rendering_enabled": false,
+        "map_js_key_configured": false,
+        "security_js_code_configured": false,
+        "warnings": []
+      },
+      "plan": {
+        "title": "plan-workspace-constraints",
+        "summary": "summary-workspace-constraints",
+        "weather_summary": "",
+        "best_booking_tip": "tip",
+        "estimated_budget": {
+          "currency": "CNY",
+          "accommodation": "",
+          "transport": "",
+          "food": "",
+          "tickets": "",
+          "extras": "",
+          "total_estimate": ""
+        },
+        "stay_recommendations": [],
+        "city_tips": [],
+        "packing_list": [],
+        "days": [
+          {
+            "day_number": 1,
+            "date": "2026-05-01",
+            "theme": "第1天-workspace-constraints",
+            "overview": "overview-1-workspace-constraints",
+            "hotel_area": "Jingan District",
+            "stay": {
+              "area": "Jingan District",
+              "hotel_name": "Jingan Hotel",
+              "reason": "已按固定酒店预约锁定住宿",
+              "room_nightly_cost_cny": 0,
+              "poi": {
+                "name": "Jingan Hotel",
+                "poi_id": null,
+                "address": "Jingan District",
+                "tags": [],
+                "rating": null,
+                "recommended_duration_minutes": null,
+                "opening_hours": null,
+                "district": "上海",
+                "longitude": null,
+                "latitude": null,
+                "source": "manual_placeholder"
+              }
+            },
+            "cost_breakdown": {
+              "accommodation_per_person_cny": 100,
+              "transport_per_person_cny": 20,
+              "food_per_person_cny": 40,
+              "tickets_per_person_cny": 30,
+              "extras_per_person_cny": 10,
+              "total_per_person_cny": 200
+            },
+            "transport_tips": [],
+            "meals": [
+              {
+                "meal_type": "lunch",
+                "venue_name": "餐厅1-workspace-constraints",
+                "cuisine": "",
+                "suggestion": "",
+                "estimated_cost": "",
+                "estimated_cost_cny": 40,
+                "poi": null
+              }
+            ],
+            "activities": [
+              {
+                "start_time": "09:00",
+                "end_time": "10:30",
+                "title": "活动1-workspace-constraints",
+                "category": "sightseeing",
+                "description": "desc",
+                "location_name": "外滩",
+                "transport_from_previous": null,
+                "expected_cost": null,
+                "ticket_cost_cny": 30,
+                "booking_tip": null,
+                "poi": null
+              }
+            ],
+            "weather": null,
+            "route_summary": null,
+            "route_summaries": [],
+            "route_segments": [],
+            "map_pois": [
+              {
+                "kind": "stay",
+                "label": "Jingan Hotel",
+                "poi": {
+                  "name": "Jingan Hotel",
+                  "poi_id": null,
+                  "address": "Jingan District",
+                  "tags": [],
+                  "rating": null,
+                  "recommended_duration_minutes": null,
+                  "opening_hours": null,
+                  "district": "上海",
+                  "longitude": null,
+                  "latitude": null,
+                  "source": "manual_placeholder"
+                }
+              }
+            ],
+            "fallbacks": [
+              "reservation_anchor_injected"
+            ]
+          },
+          {
+            "day_number": 2,
+            "date": "2026-05-02",
+            "theme": "第2天-workspace-constraints",
+            "overview": "overview-2-workspace-constraints",
+            "hotel_area": "Jingan District",
+            "stay": {
+              "area": "Jingan District",
+              "hotel_name": "Jingan Hotel",
+              "reason": "已按固定酒店预约锁定住宿",
+              "room_nightly_cost_cny": 0,
+              "poi": {
+                "name": "Jingan Hotel",
+                "poi_id": null,
+                "address": "Jingan District",
+                "tags": [],
+                "rating": null,
+                "recommended_duration_minutes": null,
+                "opening_hours": null,
+                "district": "上海",
+                "longitude": null,
+                "latitude": null,
+                "source": "manual_placeholder"
+              }
+            },
+            "cost_breakdown": {
+              "accommodation_per_person_cny": 110,
+              "transport_per_person_cny": 25,
+              "food_per_person_cny": 45,
+              "tickets_per_person_cny": 35,
+              "extras_per_person_cny": 10,
+              "total_per_person_cny": 225
+            },
+            "transport_tips": [],
+            "meals": [
+              {
+                "meal_type": "dinner",
+                "venue_name": "餐厅2-workspace-constraints",
+                "cuisine": "",
+                "suggestion": "",
+                "estimated_cost": "",
+                "estimated_cost_cny": 45,
+                "poi": null
+              }
+            ],
+            "activities": [
+              {
+                "start_time": "14:00",
+                "end_time": "16:00",
+                "title": "活动2-workspace-constraints",
+                "category": "explore",
+                "description": "desc",
+                "location_name": "徐汇",
+                "transport_from_previous": null,
+                "expected_cost": null,
+                "ticket_cost_cny": 35,
+                "booking_tip": null,
+                "poi": null
+              }
+            ],
+            "weather": null,
+            "route_summary": null,
+            "route_summaries": [],
+            "route_segments": [],
+            "map_pois": [
+              {
+                "kind": "stay",
+                "label": "Jingan Hotel",
+                "poi": {
+                  "name": "Jingan Hotel",
+                  "poi_id": null,
+                  "address": "Jingan District",
+                  "tags": [],
+                  "rating": null,
+                  "recommended_duration_minutes": null,
+                  "opening_hours": null,
+                  "district": "上海",
+                  "longitude": null,
+                  "latitude": null,
+                  "source": "manual_placeholder"
+                }
+              }
+            ],
+            "fallbacks": [
+              "reservation_anchor_injected"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

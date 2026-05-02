@@ -1,0 +1,346 @@
+{
+  "9029aa7831864334a92b7de200d7c879": {
+    "id": "9029aa7831864334a92b7de200d7c879",
+    "share_token": "IZr9zoKBord8",
+    "status": "ready",
+    "version": 2,
+    "created_at": "2026-04-15T02:12:28.833736Z",
+    "updated_at": "2026-04-15T02:12:28.838068Z",
+    "request_brief": {
+      "origin": null,
+      "destination": "上海",
+      "start_date": "2026-05-01",
+      "days": 2,
+      "interests": [
+        "自然风光"
+      ],
+      "must_visit": [],
+      "pace": "balanced",
+      "budget_level": "comfort",
+      "transport_preferences": [],
+      "hotel_style": "市中心舒适型",
+      "dining_preferences": [],
+      "travelers": {
+        "adults": 2,
+        "children": 0,
+        "seniors": 0
+      },
+      "notes": null
+    },
+    "manual_notes": "",
+    "locked_day_numbers": [],
+    "reservations": [
+      {
+        "id": "riverfront-dinner",
+        "type": "restaurant",
+        "title": "Riverfront Dinner",
+        "start_at": "2026-05-01T18:30:00Z",
+        "end_at": "2026-05-01T20:00:00Z",
+        "location": "The Bund",
+        "notes": "",
+        "source": "",
+        "confirmation_code": ""
+      }
+    ],
+    "last_replan_summary": {
+      "created_at": "2026-04-15T02:12:28.838056Z",
+      "scope": "day",
+      "repair_mode": "fill_gaps",
+      "repair_gap": "reservation",
+      "target_days": [
+        1
+      ],
+      "title": "第 1 天已完成预约补齐",
+      "items": [
+        {
+          "day_number": 1,
+          "highlights": [
+            "更新午餐：Riverfront Dinner",
+            "人均预算 200 -> 248 元"
+          ],
+          "changes": [
+            {
+              "kind": "reservation",
+              "label": "餐厅预约",
+              "before": "未落地",
+              "after": "Riverfront Dinner"
+            },
+            {
+              "kind": "meal",
+              "label": "午餐",
+              "before": "Old Lunch",
+              "after": "Riverfront Dinner"
+            },
+            {
+              "kind": "budget",
+              "label": "人均预算",
+              "before": "200 元",
+              "after": "248 元"
+            }
+          ]
+        }
+      ]
+    },
+    "last_precheck_summary": null,
+    "response_snapshot": {
+      "status": "success",
+      "generated_at": "2026-04-15T02:12:28.837829Z",
+      "request_echo": {
+        "origin": null,
+        "destination": "上海",
+        "start_date": "2026-05-01",
+        "days": 2,
+        "interests": [
+          "自然风光"
+        ],
+        "must_visit": [],
+        "pace": "balanced",
+        "budget_level": "comfort",
+        "transport_preferences": [],
+        "hotel_style": "市中心舒适型",
+        "dining_preferences": [],
+        "travelers": {
+          "adults": 2,
+          "children": 0,
+          "seniors": 0
+        },
+        "notes": null
+      },
+      "initial_plan": {
+        "summary": "seed-reservation-fresh",
+        "days": [
+          {
+            "day_number": 1,
+            "date": "2026-05-01",
+            "theme": "主题1-reservation-fresh",
+            "focus": "外滩",
+            "must_visit": [],
+            "poi_query": "",
+            "dining_query": ""
+          },
+          {
+            "day_number": 2,
+            "date": "2026-05-02",
+            "theme": "主题2-reservation-fresh",
+            "focus": "徐汇",
+            "must_visit": [],
+            "poi_query": "",
+            "dining_query": ""
+          }
+        ]
+      },
+      "planning_context": {
+        "destination": "上海",
+        "attractions": [],
+        "restaurants": [],
+        "hotels": [],
+        "routes": [],
+        "weather": {
+          "overview": "",
+          "temperature_range": "",
+          "suggestions": [],
+          "daily_forecasts": []
+        }
+      },
+      "agent_trace": [
+        {
+          "agent_name": "planner_seed_agent",
+          "success": true,
+          "summary": "",
+          "used_llm": false,
+          "used_tools": [],
+          "warnings": []
+        }
+      ],
+      "tool_trace": [],
+      "meta": {
+        "llm_used": true,
+        "fallback_used": false,
+        "model_name": "mock",
+        "warnings": [
+          "已按请求补齐缺口 第 1 天（reservation），原因: 落地晚餐预约。"
+        ],
+        "stage_timings_ms": {
+          "total": 20
+        }
+      },
+      "diagnostics": {
+        "llm": [],
+        "mcp": [],
+        "warnings": [
+          "已按请求补齐缺口 第 1 天（reservation），原因: 落地晚餐预约。"
+        ],
+        "fallbacks_used": [],
+        "reservation_coverage": [
+          {
+            "reservation_id": "riverfront-dinner",
+            "title": "Riverfront Dinner",
+            "status": "covered",
+            "target_days": [
+              1
+            ],
+            "matched_days": [
+              1
+            ],
+            "auto_anchored_days": [],
+            "detail": "Covered on day 1."
+          }
+        ],
+        "error_code": ""
+      },
+      "map_config": {
+        "provider": "amap",
+        "enabled": false,
+        "js_api_key": null,
+        "security_js_code": null,
+        "center": null
+      },
+      "integration_status": {
+        "mcp_enabled": false,
+        "mcp_connected": false,
+        "mcp_command": "",
+        "llm_enabled": false,
+        "llm_reachable": false,
+        "llm_model": "",
+        "llm_base_url": "",
+        "available_tools": [],
+        "resolved_tools": {},
+        "missing_tools": [],
+        "map_rendering_enabled": false,
+        "map_js_key_configured": false,
+        "security_js_code_configured": false,
+        "warnings": []
+      },
+      "plan": {
+        "title": "plan-reservation-fresh",
+        "summary": "summary-reservation-fresh",
+        "weather_summary": "",
+        "best_booking_tip": "tip",
+        "estimated_budget": {
+          "currency": "CNY",
+          "accommodation": "¥210/人",
+          "transport": "¥45/人",
+          "food": "¥133/人",
+          "tickets": "¥65/人",
+          "extras": "¥20/人",
+          "total_estimate": "¥473/人"
+        },
+        "stay_recommendations": [],
+        "city_tips": [],
+        "packing_list": [],
+        "days": [
+          {
+            "day_number": 1,
+            "date": "2026-05-01",
+            "theme": "第1天-reservation-current",
+            "overview": "overview-1-reservation-current",
+            "hotel_area": "黄浦",
+            "stay": {
+              "area": "",
+              "hotel_name": "Current Stay",
+              "reason": "",
+              "room_nightly_cost_cny": 0,
+              "poi": null
+            },
+            "cost_breakdown": {
+              "accommodation_per_person_cny": 100,
+              "transport_per_person_cny": 20,
+              "food_per_person_cny": 88,
+              "tickets_per_person_cny": 30,
+              "extras_per_person_cny": 10,
+              "total_per_person_cny": 248
+            },
+            "transport_tips": [],
+            "meals": [
+              {
+                "meal_type": "lunch",
+                "venue_name": "Riverfront Dinner",
+                "cuisine": "",
+                "suggestion": "",
+                "estimated_cost": "",
+                "estimated_cost_cny": 40,
+                "poi": null
+              }
+            ],
+            "activities": [
+              {
+                "start_time": "09:00",
+                "end_time": "10:30",
+                "title": "Current Activity",
+                "category": "sightseeing",
+                "description": "desc",
+                "location_name": "外滩",
+                "transport_from_previous": null,
+                "expected_cost": null,
+                "ticket_cost_cny": 30,
+                "booking_tip": null,
+                "poi": null
+              }
+            ],
+            "weather": null,
+            "route_summary": null,
+            "route_summaries": [],
+            "route_segments": [],
+            "map_pois": [],
+            "fallbacks": []
+          },
+          {
+            "day_number": 2,
+            "date": "2026-05-02",
+            "theme": "第2天-reservation-current",
+            "overview": "overview-2-reservation-current",
+            "hotel_area": "徐汇",
+            "stay": {
+              "area": "",
+              "hotel_name": "",
+              "reason": "",
+              "room_nightly_cost_cny": 0,
+              "poi": null
+            },
+            "cost_breakdown": {
+              "accommodation_per_person_cny": 110,
+              "transport_per_person_cny": 25,
+              "food_per_person_cny": 45,
+              "tickets_per_person_cny": 35,
+              "extras_per_person_cny": 10,
+              "total_per_person_cny": 225
+            },
+            "transport_tips": [],
+            "meals": [
+              {
+                "meal_type": "dinner",
+                "venue_name": "餐厅2-reservation-current",
+                "cuisine": "",
+                "suggestion": "",
+                "estimated_cost": "",
+                "estimated_cost_cny": 45,
+                "poi": null
+              }
+            ],
+            "activities": [
+              {
+                "start_time": "14:00",
+                "end_time": "16:00",
+                "title": "活动2-reservation-current",
+                "category": "explore",
+                "description": "desc",
+                "location_name": "徐汇",
+                "transport_from_previous": null,
+                "expected_cost": null,
+                "ticket_cost_cny": 35,
+                "booking_tip": null,
+                "poi": null
+              }
+            ],
+            "weather": null,
+            "route_summary": null,
+            "route_summaries": [],
+            "route_segments": [],
+            "map_pois": [],
+            "fallbacks": []
+          }
+        ]
+      }
+    }
+  }
+}

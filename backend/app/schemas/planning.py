@@ -243,11 +243,41 @@ class StageDiagnostic(BaseModel):
     provider: str = ""
 
 
+class ReservationConflictItem(BaseModel):
+    day_number: int
+    kind: Literal["activity", "meal", "stay"]
+    label: str = ""
+    time_text: str = ""
+    summary: str = ""
+
+
+class ReservationCoverageDiagnostic(BaseModel):
+    reservation_id: str = ""
+    title: str
+    status: Literal["covered", "unresolved", "pending"] = "pending"
+    target_days: list[int] = Field(default_factory=list)
+    matched_days: list[int] = Field(default_factory=list)
+    auto_anchored_days: list[int] = Field(default_factory=list)
+    coordinated_days: list[int] = Field(default_factory=list)
+    coordination_tip: str = ""
+    reason_code: Literal[
+        "generated_match",
+        "runtime_fallback",
+        "missing_time_window",
+        "day_conflict",
+        "no_explicit_match",
+    ] = "generated_match"
+    reason_summary: str = ""
+    conflict_items: list[ReservationConflictItem] = Field(default_factory=list)
+    detail: str = ""
+
+
 class PlanDiagnostics(BaseModel):
     llm: list[StageDiagnostic] = Field(default_factory=list)
     mcp: list[StageDiagnostic] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     fallbacks_used: list[str] = Field(default_factory=list)
+    reservation_coverage: list[ReservationCoverageDiagnostic] = Field(default_factory=list)
     error_code: str = ""
 
 
@@ -329,10 +359,128 @@ class ReservationItem(BaseModel):
     confirmation_code: str = ""
 
 
+class ReplanChange(BaseModel):
+    kind: Literal["stay", "meal", "activity", "route", "budget", "reservation"]
+    label: str
+    before: str = ""
+    after: str = ""
+
+
+class ReplanDaySummary(BaseModel):
+    day_number: int
+    highlights: list[str] = Field(default_factory=list)
+    changes: list[ReplanChange] = Field(default_factory=list)
+
+
+class ReplanSummary(BaseModel):
+    created_at: datetime
+    scope: Literal["trip", "day"] = "day"
+    repair_mode: Literal["replace", "fill_gaps"] = "replace"
+    repair_gap: str | None = None
+    target_days: list[int] = Field(default_factory=list)
+    title: str = ""
+    items: list[ReplanDaySummary] = Field(default_factory=list)
+
+
+class PrecheckRepairAction(BaseModel):
+    gap: Literal["stay", "meal", "breakfast", "lunch", "dinner", "snack", "activity", "reservation", "day-plan"]
+    label: str = ""
+    reason: str = ""
+    day_numbers: list[int] = Field(default_factory=list)
+
+
+class PrecheckSummaryItem(BaseModel):
+    key: str
+    title: str
+    before_status: Literal["ok", "warning", "pending"] = "pending"
+    after_status: Literal["ok", "warning", "pending"] = "pending"
+    before_days: list[int] = Field(default_factory=list)
+    after_days: list[int] = Field(default_factory=list)
+    recommended_gap: Literal["stay", "meal", "breakfast", "lunch", "dinner", "snack", "activity", "reservation", "day-plan"] | None = None
+    action_label: str = ""
+    action_reason: str = ""
+    actions: list[PrecheckRepairAction] = Field(default_factory=list)
+    before_summary: str = ""
+    after_summary: str = ""
+    conflict_items: list[ReservationConflictItem] = Field(default_factory=list)
+
+
+class PrecheckSummary(BaseModel):
+    created_at: datetime
+    title: str = ""
+    items: list[PrecheckSummaryItem] = Field(default_factory=list)
+
+
+class WorkspaceTimelineEvent(BaseModel):
+    id: str = ""
+    created_at: datetime
+    kind: Literal[
+        "created",
+        "updated",
+        "generated",
+        "replanned",
+        "prechecked",
+        "share_revoked",
+        "share_regenerated",
+    ]
+    title: str
+    summary: str = ""
+    version: int = Field(default=1, ge=1)
+    target_days: list[int] = Field(default_factory=list)
+
+
+class TripSummary(BaseModel):
+    id: str
+    share_token: str
+    share_enabled: bool = True
+    status: Literal["draft", "ready", "action_required", "generating", "error"] = "ready"
+    version: int = Field(default=1, ge=1)
+    destination: str
+    start_date: date
+    days: int = Field(default=1, ge=1)
+    updated_at: datetime
+    created_at: datetime
+    reservations_count: int = 0
+    locked_day_count: int = 0
+    has_result: bool = False
+    title: str = ""
+
+
+class PlanningJob(BaseModel):
+    id: str
+    kind: Literal["generate_plan", "update_trip", "replan_trip", "precheck_trip"]
+    status: Literal["queued", "running", "succeeded", "failed"] = "queued"
+    created_at: datetime
+    updated_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    trip_id: str | None = None
+    progress_message: str = ""
+    error_code: str = ""
+    error_message: str = ""
+    planning_response: PlanningResponse | None = None
+    trip_workspace: "TripWorkspace | None" = None
+
+
+class PlanningJobSummary(BaseModel):
+    id: str
+    kind: Literal["generate_plan", "update_trip", "replan_trip", "precheck_trip"]
+    status: Literal["queued", "running", "succeeded", "failed"] = "queued"
+    created_at: datetime
+    updated_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    trip_id: str | None = None
+    progress_message: str = ""
+    error_code: str = ""
+    error_message: str = ""
+
+
 class TripWorkspace(BaseModel):
     id: str
     share_token: str
-    status: Literal["draft", "ready"] = "ready"
+    share_enabled: bool = True
+    status: Literal["draft", "ready", "action_required", "generating", "error"] = "ready"
     version: int = Field(default=1, ge=1)
     created_at: datetime
     updated_at: datetime
@@ -340,6 +488,9 @@ class TripWorkspace(BaseModel):
     manual_notes: str = ""
     locked_day_numbers: list[int] = Field(default_factory=list)
     reservations: list[ReservationItem] = Field(default_factory=list)
+    last_replan_summary: ReplanSummary | None = None
+    last_precheck_summary: PrecheckSummary | None = None
+    timeline: list[WorkspaceTimelineEvent] = Field(default_factory=list)
     response_snapshot: PlanningResponse | None = None
 
 
@@ -362,9 +513,18 @@ class TripWorkspacePatchRequest(BaseModel):
     include_debug: bool = False
 
 
+class PrecheckRefreshRequest(BaseModel):
+    include_debug: bool = False
+
+
 class ReplanRequest(BaseModel):
     scope: Literal["trip", "day"] = "day"
     day_numbers: list[int] = Field(default_factory=list)
     preserve_locked_days: bool = True
+    repair_mode: Literal["replace", "fill_gaps"] = "replace"
+    repair_gap: Literal["stay", "meal", "breakfast", "lunch", "dinner", "snack", "activity", "reservation", "day-plan"] | None = None
     reason: str | None = None
     include_debug: bool = False
+
+
+PlanningJob.model_rebuild()

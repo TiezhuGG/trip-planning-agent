@@ -1,6 +1,7 @@
 export * from "./planning-request"
 export * from "./planning-domain"
 export * from "./planning-diagnostics"
+export * from "./planning-jobs"
 export * from "./planning-telemetry"
 export * from "./planning-response"
 export * from "./planning-workspace"

@@ -14,7 +14,7 @@ defineProps<{
   >
     <div class="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
       <div>
-        <div class="text-xs uppercase tracking-[0.28em] text-white/55">Overview</div>
+        <div class="text-xs uppercase tracking-[0.28em] text-white/55">行程总览</div>
         <h2 class="mt-3 text-3xl font-semibold sm:text-[38px]">
           {{ result.plan.title }}
         </h2>
@@ -39,7 +39,7 @@ defineProps<{
       <div class="grid gap-4 sm:grid-cols-2">
         <div class="rounded-[24px] border border-white/10 bg-white/10 px-4 py-4">
           <div class="text-xs uppercase tracking-[0.18em] text-white/55">
-            Budget Total
+            预算总览
           </div>
           <div class="mt-3 text-2xl font-semibold">
             {{ result.plan.estimated_budget.total_estimate }}
@@ -47,18 +47,18 @@ defineProps<{
         </div>
         <div class="rounded-[24px] border border-white/10 bg-white/10 px-4 py-4">
           <div class="text-xs uppercase tracking-[0.18em] text-white/55">
-            City Tips
+            城市提醒
           </div>
           <div class="mt-3 text-sm leading-6 text-white/80">
-            {{ result.plan.city_tips.join(", ") || "No city tips" }}
+            {{ result.plan.city_tips.join("；") || "暂无城市提醒" }}
           </div>
         </div>
         <div class="rounded-[24px] border border-white/10 bg-white/10 px-4 py-4 sm:col-span-2">
           <div class="text-xs uppercase tracking-[0.18em] text-white/55">
-            Packing List
+            行前清单
           </div>
           <div class="mt-3 text-sm leading-6 text-white/80">
-            {{ result.plan.packing_list.join(", ") || "No packing suggestions" }}
+            {{ result.plan.packing_list.join("；") || "暂无打包建议" }}
           </div>
         </div>
       </div>

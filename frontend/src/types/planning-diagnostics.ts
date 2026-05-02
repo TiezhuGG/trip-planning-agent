@@ -28,11 +28,40 @@ export interface StageDiagnostic {
   provider: string
 }
 
+export interface ReservationCoverageDiagnostic {
+  reservation_id: string
+  title: string
+  status: "covered" | "unresolved" | "pending"
+  target_days: number[]
+  matched_days: number[]
+  auto_anchored_days: number[]
+  coordinated_days: number[]
+  coordination_tip: string
+  reason_code:
+    | "generated_match"
+    | "runtime_fallback"
+    | "missing_time_window"
+    | "day_conflict"
+    | "no_explicit_match"
+  reason_summary: string
+  conflict_items: ReservationConflictItem[]
+  detail: string
+}
+
+export interface ReservationConflictItem {
+  day_number: number
+  kind: "activity" | "meal" | "stay"
+  label: string
+  time_text: string
+  summary: string
+}
+
 export interface PlanDiagnostics {
   llm: StageDiagnostic[]
   mcp: StageDiagnostic[]
   warnings: string[]
   fallbacks_used: string[]
+  reservation_coverage: ReservationCoverageDiagnostic[]
   error_code: string
 }
 

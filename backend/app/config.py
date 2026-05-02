@@ -59,6 +59,8 @@ class Settings(BaseSettings):
     planner_generate_cache_max_entries: int = 64
     planner_trip_store_driver: str = "auto"
     planner_trip_store_path: str = "data/trips.db"
+    planner_job_store_driver: str = "auto"
+    planner_job_store_path: str = "data/planning_jobs.db"
     planner_stage_stats_enabled: bool = True
     planner_stage_stats_window: int = 50
     planner_stage_stats_series_points: int = 20

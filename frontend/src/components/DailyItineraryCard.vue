@@ -6,6 +6,7 @@ import type {
   ReservationItem,
   RouteSummary,
 } from "../types/planning";
+import { formatDateTimeZhCn } from "../utils/workspaceFormatting";
 
 const props = defineProps<{
   day: DayPlan;
@@ -16,6 +17,7 @@ const props = defineProps<{
   reservations?: ReservationItem[];
   locked?: boolean;
   replanning?: boolean;
+  highlighted?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -45,7 +47,7 @@ function mealLabel(type: string) {
 
 function formatCny(value: number, suffix = "") {
   if (!value) return "";
-  return `￥${value.toLocaleString()}${suffix}`;
+  return `¥${value.toLocaleString()}${suffix}`;
 }
 
 function shortAddress(value?: string | null) {
@@ -54,9 +56,7 @@ function shortAddress(value?: string | null) {
 }
 
 function formatDateTime(value?: string | null) {
-  if (!value) return "--";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN");
+  return formatDateTimeZhCn(value);
 }
 
 function reservationTypeLabel(type: string) {
@@ -74,11 +74,18 @@ function reservationTypeLabel(type: string) {
 </script>
 
 <template>
-  <article class="rounded-[28px] border border-[#dbe5ef] bg-white px-5 py-5 shadow-sm">
+  <article
+    class="rounded-[28px] border bg-white px-5 py-5 shadow-sm transition"
+    :class="
+      highlighted
+        ? 'border-[#f0c36a] bg-amber-50/40 shadow-[0_0_0_1px_rgba(245,158,11,0.18)]'
+        : 'border-[#dbe5ef]'
+    "
+  >
     <div class="flex flex-wrap items-start justify-between gap-4">
       <div>
         <div class="text-lg font-semibold text-ink">
-          第 {{ day.day_number }} 天 · {{ day.theme }}
+          第{{ day.day_number }} 天 · {{ day.theme }}
         </div>
         <div class="mt-2 text-sm text-slate-500">
           {{ day.date }}
@@ -91,6 +98,12 @@ function reservationTypeLabel(type: string) {
         </span>
         <span class="rounded-full border border-[#d7e2ec] bg-[#eef4f9] px-4 py-2 text-sm text-[#35516b] shadow-sm">
           当日人均 {{ formatCny(day.cost_breakdown.total_per_person_cny) }}
+        </span>
+        <span
+          v-if="highlighted"
+          class="rounded-full border border-amber-200 bg-white px-4 py-2 text-sm text-amber-700 shadow-sm"
+        >
+          刚刚更新
         </span>
         <button
           type="button"
@@ -129,7 +142,7 @@ function reservationTypeLabel(type: string) {
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div class="font-medium">当日固定安排</div>
           <span class="rounded-full bg-white/80 px-3 py-1 text-xs text-amber-700">
-            {{ reservations.length }} 个锚点
+            {{ reservations.length }} 个固定安排
           </span>
         </div>
         <div class="mt-3 space-y-3">
@@ -236,7 +249,7 @@ function reservationTypeLabel(type: string) {
                   {{ route.from_name || "起点待定" }} → {{ route.to_name || "终点待定" }}
                 </div>
                 <div class="mt-2 text-xs text-slate-500">
-                  {{ route.distance_text || "距离待补充" }}
+                  {{ route.distance_text || "距离待补全" }}
                   {{ route.duration_text ? ` · ${route.duration_text}` : "" }}
                 </div>
                 <div class="mt-2 text-xs text-[#2f5a81]">

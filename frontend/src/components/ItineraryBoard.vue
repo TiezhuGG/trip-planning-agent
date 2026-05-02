@@ -1,9 +1,40 @@
-﻿<script setup lang="ts">
-import type { PlanningResponse } from '../types/planning'
+<script setup lang="ts">
+import type { PlanningResponse } from "../types/planning";
 
 defineProps<{
-  result: PlanningResponse
-}>()
+  result: PlanningResponse;
+}>();
+
+function mealLabel(type: string) {
+  return (
+    { breakfast: "早餐", lunch: "午餐", dinner: "晚餐", snack: "加餐" }[type] ?? type
+  );
+}
+
+function activityCategoryLabel(category: string) {
+  const normalized = category.trim().toLowerCase();
+  return (
+    {
+      sightseeing: "观光",
+      attraction: "景点",
+      museum: "博物馆",
+      culture: "人文",
+      food: "美食",
+      restaurant: "餐饮",
+      cafe: "咖啡",
+      shopping: "购物",
+      nightlife: "夜生活",
+      photo: "拍照",
+      nature: "自然",
+      park: "公园",
+      entertainment: "娱乐",
+      transport: "交通",
+      transit: "交通",
+      hotel: "住宿",
+      rest: "休息",
+    }[normalized] ?? category
+  );
+}
 </script>
 
 <template>
@@ -15,7 +46,7 @@ defineProps<{
     >
       <div class="flex flex-col gap-3 border-b border-slate-200/80 pb-4 md:flex-row md:items-center md:justify-between">
         <div>
-          <p class="text-xs uppercase tracking-[0.25em] text-lagoon/60">Day {{ day.day_number }}</p>
+          <p class="text-xs uppercase tracking-[0.25em] text-lagoon/60">第 {{ day.day_number }} 天</p>
           <h3 class="mt-1 font-display text-2xl text-ink">{{ day.theme }}</h3>
           <p class="mt-2 text-sm text-slate-600">{{ day.date }} · {{ day.overview }}</p>
         </div>
@@ -40,14 +71,14 @@ defineProps<{
                 <h4 class="mt-2 text-lg font-medium text-slate-800">{{ activity.title }}</h4>
               </div>
               <span class="rounded-full bg-white px-3 py-1 text-xs uppercase tracking-[0.2em] text-slate-500">
-                {{ activity.category }}
+                {{ activityCategoryLabel(activity.category) }}
               </span>
             </div>
             <p class="mt-3 text-sm leading-7 text-slate-600">{{ activity.description }}</p>
             <div class="mt-3 grid gap-2 text-sm text-slate-600 md:grid-cols-3">
               <div>地点：{{ activity.location_name }}</div>
-              <div>交通：{{ activity.transport_from_previous || '现场决定' }}</div>
-              <div>费用：{{ activity.expected_cost || '待定' }}</div>
+              <div>交通：{{ activity.transport_from_previous || "现场决定" }}</div>
+              <div>费用：{{ activity.expected_cost || "待定" }}</div>
             </div>
             <div v-if="activity.booking_tip" class="mt-3 text-sm text-coral">
               {{ activity.booking_tip }}
@@ -64,7 +95,7 @@ defineProps<{
                 :key="`${day.day_number}-${meal.meal_type}-${meal.venue_name}`"
                 class="rounded-3xl bg-white/80 px-4 py-3"
               >
-                <div class="text-sm uppercase tracking-[0.2em] text-slate-500">{{ meal.meal_type }}</div>
+                <div class="text-sm tracking-[0.2em] text-slate-500">{{ mealLabel(meal.meal_type) }}</div>
                 <div class="mt-1 font-medium text-slate-800">{{ meal.venue_name }}</div>
                 <div class="mt-2 text-sm text-slate-600">{{ meal.suggestion }}</div>
                 <div class="mt-2 text-sm text-coral">{{ meal.estimated_cost }}</div>

@@ -8,10 +8,8 @@ defineProps<{
 
 <template>
   <div class="rounded-[36px] border border-white/70 bg-white/88 p-6 shadow-card sm:p-7">
-    <div class="text-xs uppercase tracking-[0.28em] text-[#6f7f92]">
-      Agent Trace
-    </div>
-    <h2 class="mt-3 text-2xl font-semibold text-ink">Agent 调用轨迹</h2>
+    <div class="text-xs uppercase tracking-[0.28em] text-[#6f7f92]">智能体轨迹</div>
+    <h2 class="mt-3 text-2xl font-semibold text-ink">智能体调用轨迹</h2>
     <div class="mt-5 space-y-3">
       <div
         v-for="item in result.agent_trace"
@@ -33,12 +31,12 @@ defineProps<{
                 : 'bg-rose-100 text-rose-700'
             "
           >
-            {{ item.success ? "SUCCESS" : "FAILED" }}
+            {{ item.success ? "成功" : "失败" }}
           </span>
         </div>
         <div class="mt-3 flex flex-wrap gap-2">
           <span class="rounded-full bg-white px-3 py-1 text-xs shadow-sm">
-            {{ item.used_llm ? "LLM" : "RULE" }}
+            {{ item.used_llm ? "大模型" : "规则" }}
           </span>
           <span
             v-for="tool in item.used_tools"

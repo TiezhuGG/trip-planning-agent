@@ -19,7 +19,7 @@ let autoCloseTimer: number | null = null;
 const toneConfig = computed(() => {
   if (props.tone === "success") {
     return {
-      label: "Success",
+      label: "成功",
       panel: "border-[#cfe3d4] bg-white",
       badge: "bg-[#eef8f0] text-[#2f6b43] border-[#cfe3d4]",
       message: "border-[#dfeee3] bg-[#f6fbf7] text-[#42614c]",
@@ -30,7 +30,7 @@ const toneConfig = computed(() => {
   }
   if (props.tone === "error") {
     return {
-      label: "Error",
+      label: "错误",
       panel: "border-[#ecd2d2] bg-white",
       badge: "bg-[#fff3f3] text-[#9a3d3d] border-[#ecd2d2]",
       message: "border-[#f2dddd] bg-[#fff7f7] text-[#7b5252]",
@@ -40,7 +40,7 @@ const toneConfig = computed(() => {
     };
   }
   return {
-    label: "Notice",
+    label: "提示",
     panel: "border-[#d8e3ee] bg-white",
     badge: "bg-[#f5f8fb] text-[#35516b] border-[#d8e3ee]",
     message: "border-[#e3ebf2] bg-[#f5f8fb] text-slate-600",

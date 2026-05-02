@@ -10,7 +10,7 @@ defineProps<{
   <section class="rounded-4xl border border-white/60 bg-white/80 p-5">
     <div class="flex items-center justify-between">
       <div>
-        <p class="text-xs uppercase tracking-[0.25em] text-lagoon/60">Agent Trace</p>
+        <p class="text-xs uppercase tracking-[0.25em] text-lagoon/60">智能体轨迹</p>
         <h3 class="mt-1 font-display text-xl text-ink">工具调用轨迹</h3>
       </div>
       <div class="text-sm text-slate-500">{{ result.tool_trace.length }} 次调用</div>
@@ -31,7 +31,7 @@ defineProps<{
             class="rounded-full px-3 py-1 text-xs font-medium"
             :class="item.success ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'"
           >
-            {{ item.success ? 'SUCCESS' : 'FAILED' }}
+            {{ item.success ? '成功' : '失败' }}
           </span>
         </div>
         <p class="mt-3 text-sm text-slate-600">{{ item.summary }}</p>

@@ -85,7 +85,7 @@ function exportMarkdown() {
   <article class="rounded-[36px] border border-[#d8e3ee] bg-white p-6 shadow-card">
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
-        <div class="text-xs uppercase tracking-[0.28em] text-[#6f7f92]">Telemetry</div>
+        <div class="text-xs uppercase tracking-[0.28em] text-[#6f7f92]">运行遥测</div>
         <h3 class="mt-2 text-xl font-semibold text-ink">{{ TELEMETRY_PANEL_LABELS.title }}</h3>
       </div>
       <div class="flex items-center gap-2">
@@ -149,19 +149,19 @@ function exportMarkdown() {
 
     <div class="mt-5 grid gap-3 sm:grid-cols-4">
       <div class="rounded-[22px] border border-[#e3ebf2] bg-[#f5f8fb] px-4 py-4 text-sm text-slate-600">
-        <div class="text-xs text-slate-500">Requests</div>
+        <div class="text-xs text-slate-500">请求数</div>
         <div class="mt-2 font-medium text-ink">{{ telemetry.total_requests }}</div>
       </div>
       <div class="rounded-[22px] border border-[#e3ebf2] bg-[#f5f8fb] px-4 py-4 text-sm text-slate-600">
-        <div class="text-xs text-slate-500">Cache Hit</div>
+        <div class="text-xs text-slate-500">缓存命中</div>
         <div class="mt-2 font-medium text-ink">{{ telemetry.cache_hits }}</div>
       </div>
       <div class="rounded-[22px] border border-[#e3ebf2] bg-[#f5f8fb] px-4 py-4 text-sm text-slate-600">
-        <div class="text-xs text-slate-500">Hit Rate</div>
+        <div class="text-xs text-slate-500">命中率</div>
         <div class="mt-2 font-medium text-ink">{{ cacheHitRate }}%</div>
       </div>
       <div class="rounded-[22px] border border-[#e3ebf2] bg-[#f5f8fb] px-4 py-4 text-sm text-slate-600">
-        <div class="text-xs text-slate-500">Window</div>
+        <div class="text-xs text-slate-500">时间范围</div>
         <div class="mt-2 font-medium text-ink">{{ windowLabel }}</div>
       </div>
     </div>
@@ -181,13 +181,13 @@ function exportMarkdown() {
       <table class="min-w-full border-collapse text-sm">
         <thead>
           <tr class="text-left text-xs uppercase tracking-[0.12em] text-slate-500">
-            <th class="px-3 py-2">Stage</th>
-            <th class="px-3 py-2">Trend</th>
-            <th class="px-3 py-2">Count</th>
+            <th class="px-3 py-2">阶段</th>
+            <th class="px-3 py-2">趋势</th>
+            <th class="px-3 py-2">次数</th>
             <th class="px-3 py-2">P50</th>
             <th class="px-3 py-2">P95</th>
-            <th class="px-3 py-2">Max</th>
-            <th class="px-3 py-2">Last</th>
+            <th class="px-3 py-2">最大值</th>
+            <th class="px-3 py-2">最近值</th>
           </tr>
         </thead>
         <tbody>

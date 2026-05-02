@@ -11,7 +11,7 @@ defineProps<{
     <div class="rounded-4xl border border-white/60 bg-white/85 p-6 shadow-glow backdrop-blur">
       <div class="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
-          <p class="text-xs uppercase tracking-[0.3em] text-lagoon/60">AI Itinerary</p>
+          <p class="text-xs uppercase tracking-[0.3em] text-lagoon/60">行程总览</p>
           <h2 class="mt-2 font-display text-3xl font-semibold text-ink">
             {{ result.plan.title }}
           </h2>

@@ -15,24 +15,24 @@ export interface TelemetryStageRow {
 }
 
 export const TELEMETRY_PANEL_LABELS = {
-  title: "\u9636\u6bb5\u8017\u65f6\u7edf\u8ba1",
-  copyIdle: "\u590d\u5236\u6458\u8981",
-  copyDone: "\u5df2\u590d\u5236",
-  exportMarkdown: "\u5bfc\u51fa Markdown",
-  refreshIdle: "\u5237\u65b0",
-  refreshLoading: "\u5237\u65b0\u4e2d...",
-  timeWindow: "\u65f6\u95f4\u7a97\u53e3",
-  stageFilter: "Stage \u8fc7\u6ee4",
-  stageFilterPlaceholder: "\u4f8b\u5982 route / compose",
-  slowOnly: "\u4ec5\u770b\u6162\u9636\u6bb5",
-  updatedAt: "\u6700\u8fd1\u66f4\u65b0\u65f6\u95f4\uff1a",
-  noData: "\u6682\u65e0\u9636\u6bb5\u7edf\u8ba1\u6570\u636e",
+  title: "阶段耗时统计",
+  copyIdle: "复制摘要",
+  copyDone: "已复制",
+  exportMarkdown: "导出 Markdown",
+  refreshIdle: "刷新",
+  refreshLoading: "刷新中...",
+  timeWindow: "时间窗口",
+  stageFilter: "阶段过滤",
+  stageFilterPlaceholder: "例如 route / compose",
+  slowOnly: "仅看慢阶段",
+  updatedAt: "最近更新时间：",
+  noData: "暂无阶段统计数据",
 } as const;
 
 export const TIME_WINDOW_LABELS: Record<TimeWindow, string> = {
-  all: "\u5168\u90e8",
-  "5m": "\u6700\u8fd1 5 \u5206\u949f",
-  "1h": "\u6700\u8fd1 1 \u5c0f\u65f6",
+  all: "全部",
+  "5m": "最近 5 分钟",
+  "1h": "最近 1 小时",
 };
 
 export function stageTone(stats: StageTimingStats): "slow" | "normal" {
@@ -109,29 +109,29 @@ export function buildTelemetrySummary(
   cacheHitRate: number,
 ): string {
   const lines: string[] = [];
-  lines.push("# Planner Telemetry Report");
+  lines.push("# 规划遥测报告");
   lines.push("");
-  lines.push(`- Time: ${formatTelemetryDatetime(telemetry.updated_at)}`);
-  lines.push(`- Range: ${TIME_WINDOW_LABELS[timeWindow]}`);
-  lines.push(`- Requests: ${telemetry.total_requests}`);
-  lines.push(`- Cache Hit: ${telemetry.cache_hits} (${cacheHitRate}%)`);
-  lines.push(`- Window Size: ${telemetry.window_size}`);
+  lines.push(`- 时间：${formatTelemetryDatetime(telemetry.updated_at)}`);
+  lines.push(`- 范围：${TIME_WINDOW_LABELS[timeWindow]}`);
+  lines.push(`- 请求数：${telemetry.total_requests}`);
+  lines.push(`- 缓存命中：${telemetry.cache_hits} (${cacheHitRate}%)`);
+  lines.push(`- 窗口大小：${telemetry.window_size}`);
   lines.push("");
 
   const slowStages = stageRows.filter((item) => item.slow).slice(0, 5);
   if (slowStages.length) {
-    lines.push("## Slow Stages (Top)");
+    lines.push("## 慢阶段概览");
     for (const item of slowStages) {
       lines.push(
-        `- ${stageLabel(item.stage)}: p95=${item.stats.p95_ms}ms, max=${item.stats.max_ms}ms, last=${item.stats.last_ms}ms`,
+        `- ${stageLabel(item.stage)}：P95=${item.stats.p95_ms}ms，最大值=${item.stats.max_ms}ms，最近值=${item.stats.last_ms}ms`,
       );
     }
     lines.push("");
   }
 
-  lines.push("## Stage Table");
+  lines.push("## 阶段明细");
   lines.push("");
-  lines.push("| Stage | Count | P50 | P95 | Max | Last |");
+  lines.push("| 阶段 | 次数 | P50 | P95 | 最大值 | 最近值 |");
   lines.push("| --- | ---: | ---: | ---: | ---: | ---: |");
   for (const item of stageRows) {
     lines.push(
@@ -139,7 +139,7 @@ export function buildTelemetrySummary(
     );
   }
   if (!stageRows.length) {
-    lines.push("| (no data) | 0 | 0ms | 0ms | 0ms | 0ms |");
+    lines.push("| 暂无数据 | 0 | 0ms | 0ms | 0ms | 0ms |");
   }
   return lines.join("\n");
 }

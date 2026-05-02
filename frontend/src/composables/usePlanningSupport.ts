@@ -75,6 +75,7 @@ export function usePlanningSupport(options: {
   } = options;
 
   let progressTimer: number | null = null;
+  let manualProgressMessage: string | null = null;
 
   async function loadIntegrationStatus(refresh = false) {
     integrationLoading.value = true;
@@ -112,6 +113,7 @@ export function usePlanningSupport(options: {
   }
 
   function startProgress() {
+    manualProgressMessage = null;
     progress.value = 8;
     progressLabel.value = stageOptions[0];
     if (progressTimer) window.clearInterval(progressTimer);
@@ -128,13 +130,14 @@ export function usePlanningSupport(options: {
             : progress.value > 24
               ? 1
               : 0;
-      progressLabel.value = stageOptions[stageIndex];
+      progressLabel.value = manualProgressMessage ?? stageOptions[stageIndex];
     }, 360);
   }
 
   function stopProgress(success = true) {
     if (progressTimer) window.clearInterval(progressTimer);
     progressTimer = null;
+    manualProgressMessage = null;
     progress.value = success ? 100 : 0;
     progressLabel.value = success ? "规划完成" : "规划失败";
     if (success) {
@@ -142,6 +145,15 @@ export function usePlanningSupport(options: {
         progress.value = 0;
       }, 900);
     }
+  }
+
+  function setProgressMessage(message: string) {
+    if (!message.trim()) return;
+    manualProgressMessage = message;
+    if (progress.value === 0) {
+      progress.value = 12;
+    }
+    progressLabel.value = message;
   }
 
   function toUserError(message: string) {
@@ -216,6 +228,7 @@ export function usePlanningSupport(options: {
     exportAs,
     loadIntegrationStatus,
     loadPlanningTelemetry,
+    setProgressMessage,
     startProgress,
     stopProgress,
     toUserError,

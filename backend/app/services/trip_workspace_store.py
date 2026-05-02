@@ -15,6 +15,8 @@ class TripWorkspaceStore(Protocol):
 
     def get_by_share_token(self, share_token: str) -> TripWorkspace | None: ...
 
+    def list_recent(self, limit: int = 10) -> list[TripWorkspace]: ...
+
     def save(self, workspace: TripWorkspace) -> None: ...
 
 
@@ -45,6 +47,14 @@ class JsonTripWorkspaceStore:
             json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+
+    def list_recent(self, limit: int = 10) -> list[TripWorkspace]:
+        items = [
+            TripWorkspace.model_validate(item)
+            for item in self._load().values()
+        ]
+        items.sort(key=lambda item: item.updated_at, reverse=True)
+        return [item.model_copy(deep=True) for item in items[: max(1, int(limit))]]
 
     def _load(self) -> dict[str, dict]:
         if not self.path.exists():
@@ -110,6 +120,21 @@ class SqliteTripWorkspaceStore:
                 ),
             )
             conn.commit()
+
+    def list_recent(self, limit: int = 10) -> list[TripWorkspace]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                """
+                SELECT payload_json FROM trip_workspaces
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (max(1, int(limit)),),
+            ).fetchall()
+        return [
+            TripWorkspace.model_validate(json.loads(row["payload_json"]))
+            for row in rows
+        ]
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path)

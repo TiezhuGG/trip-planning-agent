@@ -1,0 +1,416 @@
+{
+  "8f607d7b323142628e70da08deb00724": {
+    "id": "8f607d7b323142628e70da08deb00724",
+    "share_token": "Mf7KHSnhCQ-q",
+    "status": "ready",
+    "version": 2,
+    "created_at": "2026-04-15T01:19:57.393557Z",
+    "updated_at": "2026-04-15T01:19:57.396538Z",
+    "request_brief": {
+      "origin": null,
+      "destination": "上海",
+      "start_date": "2026-05-01",
+      "days": 2,
+      "interests": [
+        "自然风光"
+      ],
+      "must_visit": [],
+      "pace": "balanced",
+      "budget_level": "comfort",
+      "transport_preferences": [],
+      "hotel_style": "市中心舒适型",
+      "dining_preferences": [],
+      "travelers": {
+        "adults": 2,
+        "children": 0,
+        "seniors": 0
+      },
+      "notes": null
+    },
+    "manual_notes": "Refresh weather and route checks before departure.",
+    "locked_day_numbers": [],
+    "reservations": [],
+    "last_replan_summary": null,
+    "last_precheck_summary": {
+      "created_at": "2026-04-15T01:19:57.396451Z",
+      "title": "出发前校验已刷新，3 项发生变化",
+      "items": [
+        {
+          "key": "weather",
+          "title": "天气校验",
+          "before_status": "warning",
+          "after_status": "warning",
+          "before_days": [
+            1,
+            2
+          ],
+          "after_days": [
+            2
+          ],
+          "recommended_gap": "activity",
+          "action_label": "改室内活动",
+          "action_reason": "请优先调整第 2 天受天气影响的活动，尽量改为室内或更适合当前天气的安排，同时减少暴晒、淋雨或大风暴露。",
+          "actions": [
+            {
+              "gap": "activity",
+              "label": "改室内活动",
+              "reason": "请优先调整第 2 天受天气影响的活动，尽量改为室内或更适合当前天气的安排，同时减少暴晒、淋雨或大风暴露。"
+            },
+            {
+              "gap": "day-plan",
+              "label": "调整出发时段",
+              "reason": "请重新梳理第 2 天的出发和活动时段，尽量把易受天气影响的户外段落后移、前移，或压缩在天气更平稳的时间窗内。"
+            }
+          ],
+          "before_summary": "第 1, 2 天缺少天气信息",
+          "after_summary": "第 2 天缺少天气信息"
+        },
+        {
+          "key": "route",
+          "title": "路线校验",
+          "before_status": "warning",
+          "after_status": "warning",
+          "before_days": [
+            1,
+            2
+          ],
+          "after_days": [
+            2
+          ],
+          "recommended_gap": "day-plan",
+          "action_label": "重排路线影响日",
+          "action_reason": "请重新梳理第 2 天的路线衔接，补齐主要通勤段并减少跨区折返。",
+          "actions": [
+            {
+              "gap": "day-plan",
+              "label": "重排路线影响日",
+              "reason": "请重新梳理第 2 天的路线衔接，补齐主要通勤段并减少跨区折返。"
+            },
+            {
+              "gap": "day-plan",
+              "label": "压缩跨区往返",
+              "reason": "请优先压缩第 2 天的跨区往返，把相近区域的景点、餐饮和预约聚合在一起，降低无效通勤和换乘次数。"
+            }
+          ],
+          "before_summary": "第 1, 2 天缺少路线摘要",
+          "after_summary": "第 2 天缺少路线摘要"
+        },
+        {
+          "key": "opening-hours",
+          "title": "营业时间校验",
+          "before_status": "warning",
+          "after_status": "warning",
+          "before_days": [
+            1,
+            2
+          ],
+          "after_days": [
+            2
+          ],
+          "recommended_gap": "activity",
+          "action_label": "替换活动",
+          "action_reason": "请优先调整第 2 天可能存在营业时间风险的活动，替换为营业状态更明确或时间更稳妥的选项。",
+          "actions": [
+            {
+              "gap": "activity",
+              "label": "替换活动",
+              "reason": "请优先调整第 2 天可能存在营业时间风险的活动，替换为营业状态更明确或时间更稳妥的选项。"
+            },
+            {
+              "gap": "day-plan",
+              "label": "调整游玩时段",
+              "reason": "请重新梳理第 2 天的活动时段，尽量把依赖营业时间的点位放到更稳妥的时间窗，避免到场后闭馆、排队过长或与用餐交通冲突。"
+            }
+          ],
+          "before_summary": "2 个地点缺少营业时间",
+          "after_summary": "1 个地点缺少营业时间"
+        }
+      ]
+    },
+    "response_snapshot": {
+      "status": "success",
+      "generated_at": "2026-04-15T01:19:57.396146Z",
+      "request_echo": {
+        "origin": null,
+        "destination": "上海",
+        "start_date": "2026-05-01",
+        "days": 2,
+        "interests": [
+          "自然风光"
+        ],
+        "must_visit": [],
+        "pace": "balanced",
+        "budget_level": "comfort",
+        "transport_preferences": [],
+        "hotel_style": "市中心舒适型",
+        "dining_preferences": [],
+        "travelers": {
+          "adults": 2,
+          "children": 0,
+          "seniors": 0
+        },
+        "notes": "Workspace notes that must be considered:\nRefresh weather and route checks before departure."
+      },
+      "initial_plan": {
+        "summary": "seed-precheck-new",
+        "days": [
+          {
+            "day_number": 1,
+            "date": "2026-05-01",
+            "theme": "主题1-precheck-new",
+            "focus": "外滩",
+            "must_visit": [],
+            "poi_query": "",
+            "dining_query": ""
+          },
+          {
+            "day_number": 2,
+            "date": "2026-05-02",
+            "theme": "主题2-precheck-new",
+            "focus": "徐汇",
+            "must_visit": [],
+            "poi_query": "",
+            "dining_query": ""
+          }
+        ]
+      },
+      "planning_context": {
+        "destination": "上海",
+        "attractions": [],
+        "restaurants": [],
+        "hotels": [],
+        "routes": [],
+        "weather": {
+          "overview": "",
+          "temperature_range": "",
+          "suggestions": [],
+          "daily_forecasts": []
+        }
+      },
+      "agent_trace": [
+        {
+          "agent_name": "planner_seed_agent",
+          "success": true,
+          "summary": "",
+          "used_llm": false,
+          "used_tools": [],
+          "warnings": []
+        }
+      ],
+      "tool_trace": [],
+      "meta": {
+        "llm_used": true,
+        "fallback_used": false,
+        "model_name": "mock",
+        "warnings": [],
+        "stage_timings_ms": {
+          "total": 20
+        }
+      },
+      "diagnostics": {
+        "llm": [],
+        "mcp": [],
+        "warnings": [],
+        "fallbacks_used": [],
+        "reservation_coverage": [],
+        "error_code": ""
+      },
+      "map_config": {
+        "provider": "amap",
+        "enabled": false,
+        "js_api_key": null,
+        "security_js_code": null,
+        "center": null
+      },
+      "integration_status": {
+        "mcp_enabled": false,
+        "mcp_connected": false,
+        "mcp_command": "",
+        "llm_enabled": false,
+        "llm_reachable": false,
+        "llm_model": "",
+        "llm_base_url": "",
+        "available_tools": [],
+        "resolved_tools": {},
+        "missing_tools": [],
+        "map_rendering_enabled": false,
+        "map_js_key_configured": false,
+        "security_js_code_configured": false,
+        "warnings": []
+      },
+      "plan": {
+        "title": "plan-precheck-new",
+        "summary": "summary-precheck-new",
+        "weather_summary": "",
+        "best_booking_tip": "tip",
+        "estimated_budget": {
+          "currency": "CNY",
+          "accommodation": "",
+          "transport": "",
+          "food": "",
+          "tickets": "",
+          "extras": "",
+          "total_estimate": ""
+        },
+        "stay_recommendations": [],
+        "city_tips": [],
+        "packing_list": [],
+        "days": [
+          {
+            "day_number": 1,
+            "date": "2026-05-01",
+            "theme": "第1天-precheck-new",
+            "overview": "overview-1-precheck-new",
+            "hotel_area": "黄浦",
+            "stay": {
+              "area": "",
+              "hotel_name": "",
+              "reason": "",
+              "room_nightly_cost_cny": 0,
+              "poi": null
+            },
+            "cost_breakdown": {
+              "accommodation_per_person_cny": 100,
+              "transport_per_person_cny": 20,
+              "food_per_person_cny": 40,
+              "tickets_per_person_cny": 30,
+              "extras_per_person_cny": 10,
+              "total_per_person_cny": 200
+            },
+            "transport_tips": [],
+            "meals": [
+              {
+                "meal_type": "lunch",
+                "venue_name": "餐厅1-precheck-new",
+                "cuisine": "",
+                "suggestion": "",
+                "estimated_cost": "",
+                "estimated_cost_cny": 40,
+                "poi": null
+              }
+            ],
+            "activities": [
+              {
+                "start_time": "09:00",
+                "end_time": "10:30",
+                "title": "活动1-precheck-new",
+                "category": "sightseeing",
+                "description": "desc",
+                "location_name": "外滩",
+                "transport_from_previous": null,
+                "expected_cost": null,
+                "ticket_cost_cny": 30,
+                "booking_tip": null,
+                "poi": {
+                  "name": "Bund Walk",
+                  "poi_id": null,
+                  "address": "",
+                  "tags": [],
+                  "rating": null,
+                  "recommended_duration_minutes": null,
+                  "opening_hours": "09:00-18:00",
+                  "district": null,
+                  "longitude": null,
+                  "latitude": null,
+                  "source": "amap"
+                }
+              }
+            ],
+            "weather": {
+              "date": "2026-05-01",
+              "day_weather": "晴",
+              "night_weather": "多云",
+              "high_temperature": "26",
+              "low_temperature": "18",
+              "advice": "注意补水"
+            },
+            "route_summary": {
+              "day_number": 1,
+              "title": "Metro to Bund",
+              "from_name": "Hotel",
+              "to_name": "Bund",
+              "waypoints": [],
+              "distance_text": "4 km",
+              "duration_text": "25 min",
+              "mode": "metro",
+              "estimated_transport_cost_cny": 4,
+              "steps": [],
+              "polyline": []
+            },
+            "route_summaries": [],
+            "route_segments": [],
+            "map_pois": [],
+            "fallbacks": []
+          },
+          {
+            "day_number": 2,
+            "date": "2026-05-02",
+            "theme": "第2天-precheck-new",
+            "overview": "overview-2-precheck-new",
+            "hotel_area": "徐汇",
+            "stay": {
+              "area": "",
+              "hotel_name": "",
+              "reason": "",
+              "room_nightly_cost_cny": 0,
+              "poi": null
+            },
+            "cost_breakdown": {
+              "accommodation_per_person_cny": 110,
+              "transport_per_person_cny": 25,
+              "food_per_person_cny": 45,
+              "tickets_per_person_cny": 35,
+              "extras_per_person_cny": 10,
+              "total_per_person_cny": 225
+            },
+            "transport_tips": [],
+            "meals": [
+              {
+                "meal_type": "dinner",
+                "venue_name": "餐厅2-precheck-new",
+                "cuisine": "",
+                "suggestion": "",
+                "estimated_cost": "",
+                "estimated_cost_cny": 45,
+                "poi": null
+              }
+            ],
+            "activities": [
+              {
+                "start_time": "14:00",
+                "end_time": "16:00",
+                "title": "活动2-precheck-new",
+                "category": "explore",
+                "description": "desc",
+                "location_name": "徐汇",
+                "transport_from_previous": null,
+                "expected_cost": null,
+                "ticket_cost_cny": 35,
+                "booking_tip": null,
+                "poi": {
+                  "name": "Xuhui Walk",
+                  "poi_id": null,
+                  "address": "",
+                  "tags": [],
+                  "rating": null,
+                  "recommended_duration_minutes": null,
+                  "opening_hours": null,
+                  "district": null,
+                  "longitude": null,
+                  "latitude": null,
+                  "source": "amap"
+                }
+              }
+            ],
+            "weather": null,
+            "route_summary": null,
+            "route_summaries": [],
+            "route_segments": [],
+            "map_pois": [],
+            "fallbacks": []
+          }
+        ]
+      }
+    }
+  }
+}

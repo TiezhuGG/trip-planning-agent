@@ -6,7 +6,7 @@ defineProps<{
 const highlights = [
   {
     label: "规划方式",
-    value: "多 Agent 协作",
+    value: "多智能体协作",
     text: "把偏好、天气、地图和每日安排拆开处理，再汇总成一份完整计划。",
   },
   {
@@ -32,7 +32,7 @@ const highlights = [
           class="inline-flex items-center gap-2 rounded-full border border-white/18 bg-white/8 px-4 py-2 text-xs font-medium uppercase tracking-[0.22em] text-white/78"
         >
           <span class="h-2 w-2 rounded-full bg-white"></span>
-          AI Travel Planner
+          智能旅行规划台
         </div>
         <h1
           class="mt-6 max-w-4xl font-display text-4xl font-semibold leading-tight text-white sm:text-5xl xl:text-[56px]"

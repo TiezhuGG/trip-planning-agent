@@ -1,4 +1,4 @@
-import { reactive, type Ref } from "vue";
+import { reactive, ref, watch, type Ref } from "vue";
 
 import type {
   IntegrationStatus,
@@ -6,7 +6,9 @@ import type {
   TripPlanningRequest,
   TripWorkspace,
 } from "../types/planning";
-import { applyRequestToFormState } from "../utils/tripPlannerForm";
+import { createInitialTripPlanningRequest } from "./plannerPageOptions";
+import { addDays, applyRequestToFormState } from "../utils/tripPlannerForm";
+import { sortUniqueNumbers } from "../utils/workspaceFormatting";
 
 type NoticeTone = "success" | "warning" | "error";
 
@@ -22,6 +24,17 @@ type PlannerOption<T> = {
   value: T;
 };
 
+const PLANNER_LOCAL_DRAFT_STORAGE_KEY = "planner-setup-local-draft";
+
+type PlannerLocalDraft = {
+  request: TripPlanningRequest;
+  startDate: string;
+  endDate: string;
+  mustVisitText: string;
+  diningText: string;
+  updatedAt: string;
+};
+
 export function usePlannerShell(options: {
   form: TripPlanningRequest;
   currentTrip: Ref<TripWorkspace | null>;
@@ -31,6 +44,7 @@ export function usePlannerShell(options: {
   tripReplanning: Ref<boolean>;
   replanningDays: Ref<number[]>;
   expandedDays: Ref<number[]>;
+  focusedWorkspaceDays: Ref<number[]>;
   integrationStatus: Ref<IntegrationStatus>;
   startDate: Ref<string>;
   endDate: Ref<string>;
@@ -48,6 +62,7 @@ export function usePlannerShell(options: {
     tripReplanning,
     replanningDays,
     expandedDays,
+    focusedWorkspaceDays,
     integrationStatus,
     startDate,
     endDate,
@@ -63,6 +78,65 @@ export function usePlannerShell(options: {
     title: "",
     messages: [],
   });
+  const localDraftRestored = ref(false);
+  const localDraftSavedAt = ref("");
+  const initialRequest = createInitialTripPlanningRequest();
+  const initialEndDate = addDays(initialRequest.start_date, initialRequest.days - 1);
+
+  watch(
+    () => ({
+      origin: form.origin ?? "",
+      destination: form.destination,
+      startDate: startDate.value,
+      endDate: endDate.value,
+      days: form.days,
+      interests: [...form.interests],
+      pace: form.pace,
+      budgetLevel: form.budget_level,
+      transportPreferences: [...form.transport_preferences],
+      hotelStyle: form.hotel_style,
+      travelers: { ...form.travelers },
+      notes: form.notes ?? "",
+      mustVisitText: mustVisitText.value,
+      diningText: diningText.value,
+      currentTripId: currentTrip.value?.id ?? "",
+      hasResult: Boolean(result.value),
+    }),
+    (snapshot) => {
+      if (snapshot.currentTripId || snapshot.hasResult) {
+        clearLocalPlannerDraft();
+        return;
+      }
+      if (isPristinePlannerState()) {
+        clearLocalPlannerDraft();
+        return;
+      }
+
+      persistLocalPlannerDraft({
+        request: {
+          origin: form.origin ?? "",
+          destination: form.destination,
+          start_date: form.start_date,
+          days: form.days,
+          interests: [...form.interests],
+          must_visit: [...form.must_visit],
+          pace: form.pace,
+          budget_level: form.budget_level,
+          transport_preferences: [...form.transport_preferences],
+          hotel_style: form.hotel_style,
+          dining_preferences: [...form.dining_preferences],
+          travelers: { ...form.travelers },
+          notes: form.notes ?? "",
+        },
+        startDate: startDate.value,
+        endDate: endDate.value,
+        mustVisitText: mustVisitText.value,
+        diningText: diningText.value,
+        updatedAt: new Date().toISOString(),
+      });
+    },
+    { deep: true },
+  );
 
   function openNotice(tone: NoticeTone, title: string, messages: string[]) {
     if (!messages.length) return;
@@ -86,7 +160,11 @@ export function usePlannerShell(options: {
     window.history.replaceState({}, "", url.toString());
   }
 
-  function applyWorkspace(workspace: TripWorkspace, config: { syncUrl?: boolean } = {}) {
+  function applyWorkspace(
+    workspace: TripWorkspace,
+    config: { syncUrl?: boolean; focusDayNumbers?: number[] } = {},
+  ) {
+    clearLocalPlannerDraft();
     currentTrip.value = workspace;
     tripNotes.value = workspace.manual_notes ?? "";
     result.value = workspace.response_snapshot ?? null;
@@ -101,8 +179,13 @@ export function usePlannerShell(options: {
       mustVisitText,
       diningText,
     });
+    const focusDayNumbers = sortUniqueNumbers(config.focusDayNumbers ?? []);
+    focusedWorkspaceDays.value = focusDayNumbers;
+    if (focusDayNumbers.length) {
+      expandedDays.value = sortUniqueNumbers([...expandedDays.value, ...focusDayNumbers]);
+    }
     if (config.syncUrl !== false) {
-      syncTripQuery(workspace.share_token);
+      syncTripQuery(workspace.share_enabled ? workspace.share_token : null);
     }
   }
 
@@ -119,12 +202,15 @@ export function usePlannerShell(options: {
   function initializePlanner(options: {
     showDevPanels: boolean;
     loadSharedTrip: (shareToken: string) => Promise<unknown>;
+    loadRecentTrips: () => Promise<unknown>;
     loadIntegrationStatus: (refresh?: boolean) => Promise<unknown>;
     loadPlanningTelemetry: () => Promise<unknown>;
   }) {
     const startupTasks: Promise<unknown>[] = [];
     const shareToken = new URLSearchParams(window.location.search).get("trip");
     if (shareToken) startupTasks.push(options.loadSharedTrip(shareToken));
+    else restoreLocalPlannerDraft();
+    startupTasks.push(options.loadRecentTrips());
     if (options.showDevPanels) {
       startupTasks.push(
         options.loadIntegrationStatus(),
@@ -141,9 +227,12 @@ export function usePlannerShell(options: {
     replanningDays.value = [];
     tripReplanning.value = false;
     expandedDays.value = [];
+    focusedWorkspaceDays.value = [];
   }
 
   function resetPlanner() {
+    const initialRequest = createInitialTripPlanningRequest();
+    clearLocalPlannerDraft();
     result.value = null;
     currentTrip.value = null;
     tripNotes.value = "";
@@ -151,6 +240,15 @@ export function usePlannerShell(options: {
     replanningDays.value = [];
     tripReplanning.value = false;
     expandedDays.value = [];
+    focusedWorkspaceDays.value = [];
+    applyRequestToFormState({
+      form,
+      request: initialRequest,
+      startDate,
+      endDate,
+      mustVisitText,
+      diningText,
+    });
     syncTripQuery(null);
   }
 
@@ -160,12 +258,109 @@ export function usePlannerShell(options: {
       : [...expandedDays.value, dayNumber];
   }
 
+  function focusWorkspaceDays(dayNumbers: number[]) {
+    const normalized = sortUniqueNumbers(dayNumbers);
+    focusedWorkspaceDays.value = normalized;
+    if (normalized.length) {
+      expandedDays.value = sortUniqueNumbers([...expandedDays.value, ...normalized]);
+    }
+  }
+
+  function clearWorkspaceFocus() {
+    focusedWorkspaceDays.value = [];
+  }
+
   function paceLabel(value: TripPlanningRequest["pace"]) {
     return paceOptions.find((item) => item.value === value)?.label ?? value;
   }
 
   function budgetLabel(value: TripPlanningRequest["budget_level"]) {
     return budgetOptions.find((item) => item.value === value)?.label ?? value;
+  }
+
+  function dismissLocalDraftNotice() {
+    localDraftRestored.value = false;
+  }
+
+  function persistLocalPlannerDraft(payload: PlannerLocalDraft) {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(PLANNER_LOCAL_DRAFT_STORAGE_KEY, JSON.stringify(payload));
+    localDraftSavedAt.value = payload.updatedAt;
+  }
+
+  function clearLocalPlannerDraft() {
+    if (typeof window === "undefined") return;
+    window.localStorage.removeItem(PLANNER_LOCAL_DRAFT_STORAGE_KEY);
+    localDraftRestored.value = false;
+    localDraftSavedAt.value = "";
+  }
+
+  function restoreLocalPlannerDraft() {
+    if (typeof window === "undefined") return;
+    const rawValue = window.localStorage.getItem(PLANNER_LOCAL_DRAFT_STORAGE_KEY);
+    if (!rawValue) return;
+
+    try {
+      const parsed = JSON.parse(rawValue) as Partial<PlannerLocalDraft>;
+      if (!parsed.request) return;
+      applyRequestToFormState({
+        form,
+        request: {
+          ...parsed.request,
+          origin: parsed.request.origin ?? "",
+          destination: parsed.request.destination ?? "",
+          start_date: parsed.request.start_date ?? startDate.value,
+          days: Math.max(1, Number(parsed.request.days) || 1),
+          interests: [...(parsed.request.interests ?? [])],
+          must_visit: [...(parsed.request.must_visit ?? [])],
+          pace: parsed.request.pace ?? form.pace,
+          budget_level: parsed.request.budget_level ?? form.budget_level,
+          transport_preferences: [...(parsed.request.transport_preferences ?? [])],
+          hotel_style: parsed.request.hotel_style ?? "",
+          dining_preferences: [...(parsed.request.dining_preferences ?? [])],
+          travelers: {
+            adults: Math.max(1, Number(parsed.request.travelers?.adults) || 1),
+            children: Math.max(0, Number(parsed.request.travelers?.children) || 0),
+            seniors: Math.max(0, Number(parsed.request.travelers?.seniors) || 0),
+          },
+          notes: parsed.request.notes ?? "",
+        },
+        startDate,
+        endDate,
+        mustVisitText,
+        diningText,
+      });
+      if (parsed.startDate) startDate.value = parsed.startDate;
+      if (parsed.endDate) endDate.value = parsed.endDate;
+      if (typeof parsed.mustVisitText === "string") mustVisitText.value = parsed.mustVisitText;
+      if (typeof parsed.diningText === "string") diningText.value = parsed.diningText;
+      localDraftRestored.value = true;
+      localDraftSavedAt.value = parsed.updatedAt ?? "";
+    } catch {
+      clearLocalPlannerDraft();
+    }
+  }
+
+  function isPristinePlannerState() {
+    return (
+      (form.origin ?? "").trim() === (initialRequest.origin ?? "").trim() &&
+      form.destination.trim() === initialRequest.destination &&
+      startDate.value === initialRequest.start_date &&
+      endDate.value === initialEndDate &&
+      form.days === initialRequest.days &&
+      JSON.stringify(form.interests) === JSON.stringify(initialRequest.interests) &&
+      JSON.stringify(form.transport_preferences) ===
+        JSON.stringify(initialRequest.transport_preferences) &&
+      form.pace === initialRequest.pace &&
+      form.budget_level === initialRequest.budget_level &&
+      form.hotel_style === initialRequest.hotel_style &&
+      form.travelers.adults === initialRequest.travelers.adults &&
+      form.travelers.children === initialRequest.travelers.children &&
+      form.travelers.seniors === initialRequest.travelers.seniors &&
+      !(form.notes ?? "").trim() &&
+      !mustVisitText.value.trim() &&
+      !diningText.value.trim()
+    );
   }
 
   return {
@@ -180,7 +375,12 @@ export function usePlannerShell(options: {
     editCurrentTrip,
     resetPlanner,
     toggleDay,
+    focusWorkspaceDays,
+    clearWorkspaceFocus,
     paceLabel,
     budgetLabel,
+    localDraftRestored,
+    localDraftSavedAt,
+    dismissLocalDraftNotice,
   };
 }

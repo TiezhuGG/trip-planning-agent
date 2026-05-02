@@ -1,4 +1,4 @@
-import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
 import sys
 
@@ -9,12 +9,6 @@ if __package__ in {None, ""}:
     # Support `python main.py` from backend/app by exposing the backend root.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-if sys.platform == "win32":
-    try:
-        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-    except Exception:
-        pass
-
 from app.api.routes.health import router as health_router
 from app.api.routes.planning import router as planning_router
 from app.config import get_settings
@@ -22,10 +16,16 @@ from app.config import get_settings
 
 def create_app() -> FastAPI:
     settings = get_settings()
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        yield
+
     app = FastAPI(
-        title=settings.app_name,
-        version="0.1.0",
-        description="AI travel planner with MCP-based AMap integration.",
+        title="Trip Planning Agent",
+        version="0.2.0",
+        description="AI trip planning workspace with itinerary generation, reservation tracking, and route support.",
+        lifespan=lifespan,
     )
 
     app.add_middleware(
