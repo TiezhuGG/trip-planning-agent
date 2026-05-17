@@ -11,6 +11,12 @@ import type {
   TripCreateRequest,
   TripPlanningRequest,
   TripWorkspace,
+  TripWorkspaceVersionCreateRequest,
+  TripWorkspaceVersion,
+  TripWorkspaceVersionListResponse,
+  TripWorkspaceVersionLabelUpdateRequest,
+  TripWorkspaceVersionMetaUpdateRequest,
+  TripWorkspaceVersionSummary,
   TripWorkspacePatchRequest,
 } from "../types/planning";
 
@@ -174,6 +180,129 @@ export async function listRecentTripWorkspaces(
     throw new Error(await extractErrorMessage(response, "读取最近工作区失败"));
   }
   return response.json() as Promise<TripSummary[]>;
+}
+
+export async function listTripWorkspaceVersions(
+  tripId: string,
+  options: { limit?: number; offset?: number } = {},
+): Promise<TripWorkspaceVersionListResponse> {
+  const params = new URLSearchParams();
+  if (options.limit) params.set("limit", String(options.limit));
+  if (options.offset) params.set("offset", String(options.offset));
+  const query = params.toString();
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/trips/${encodeURIComponent(tripId)}/versions${query ? `?${query}` : ""}`,
+  );
+  if (!response.ok) {
+    throw new Error(await extractErrorMessage(response, "读取工作区版本历史失败"));
+  }
+  return response.json() as Promise<TripWorkspaceVersionListResponse>;
+}
+
+export async function getTripWorkspaceVersion(
+  tripId: string,
+  version: number,
+): Promise<TripWorkspaceVersion> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/trips/${encodeURIComponent(tripId)}/versions/${version}`,
+  );
+  if (!response.ok) {
+    throw new Error(await extractErrorMessage(response, "读取工作区历史版本失败"));
+  }
+  return response.json() as Promise<TripWorkspaceVersion>;
+}
+
+export async function restoreTripWorkspaceVersion(
+  tripId: string,
+  version: number,
+): Promise<TripWorkspace> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/trips/${encodeURIComponent(tripId)}/versions/${version}/restore`,
+    {
+      method: "POST",
+    },
+  );
+  if (!response.ok) {
+    throw new Error(await extractErrorMessage(response, "恢复工作区历史版本失败"));
+  }
+  return response.json() as Promise<TripWorkspace>;
+}
+
+export async function createTripWorkspaceVersionSnapshot(
+  tripId: string,
+  payload: TripWorkspaceVersionCreateRequest,
+): Promise<TripWorkspace> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/trips/${encodeURIComponent(tripId)}/versions`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(await extractErrorMessage(response, "创建工作区版本快照失败"));
+  }
+  return response.json() as Promise<TripWorkspace>;
+}
+
+export async function deleteTripWorkspaceVersion(
+  tripId: string,
+  version: number,
+): Promise<void> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/trips/${encodeURIComponent(tripId)}/versions/${version}`,
+    {
+      method: "DELETE",
+    },
+  );
+  if (!response.ok) {
+    throw new Error(await extractErrorMessage(response, "删除工作区版本快照失败"));
+  }
+}
+
+export async function updateTripWorkspaceVersionLabel(
+  tripId: string,
+  version: number,
+  payload: TripWorkspaceVersionLabelUpdateRequest,
+): Promise<TripWorkspace> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/trips/${encodeURIComponent(tripId)}/versions/${version}/label`,
+    {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(await extractErrorMessage(response, "更新版本标签失败"));
+  }
+  return response.json() as Promise<TripWorkspace>;
+}
+
+export async function updateTripWorkspaceVersionMeta(
+  tripId: string,
+  version: number,
+  payload: TripWorkspaceVersionMetaUpdateRequest,
+): Promise<TripWorkspace> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/trips/${encodeURIComponent(tripId)}/versions/${version}/meta`,
+    {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(await extractErrorMessage(response, "更新版本元数据失败"));
+  }
+  return response.json() as Promise<TripWorkspace>;
 }
 
 export async function patchTripWorkspace(

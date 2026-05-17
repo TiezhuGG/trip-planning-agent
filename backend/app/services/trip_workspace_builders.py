@@ -63,6 +63,10 @@ def build_created_workspace(
         updated_at=now,
         request_brief=request_brief,
         manual_notes=manual_notes,
+        version_label="",
+        is_starred=False,
+        is_archived=False,
+        version_origin_kind="created",
         locked_day_numbers=locked_day_numbers,
         reservations=reservations,
         timeline=[
@@ -101,6 +105,7 @@ def build_updated_workspace(
             "locked_day_numbers": locked_day_numbers,
             "reservations": reservations,
             "response_snapshot": response_snapshot,
+            "version_origin_kind": "updated",
         },
         deep=True,
     )
@@ -118,6 +123,7 @@ def build_timeline_event(
         "created",
         "updated",
         "generated",
+        "snapshot",
         "replanned",
         "prechecked",
         "share_revoked",

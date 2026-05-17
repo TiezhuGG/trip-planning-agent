@@ -21,6 +21,7 @@ import type {
   TripSummary,
   TripPlanningRequest,
   TripWorkspace,
+  TripWorkspaceVersionSummary,
 } from "../types/planning"
 
 export {
@@ -62,6 +63,12 @@ export function usePlannerPageState() {
   const recentPlanningJobs = ref<PlanningJobSummary[]>([])
   const recentPlanningJobsLoading = ref(false)
   const recentPlanningJobsError = ref("")
+  const tripVersions = ref<TripWorkspaceVersionSummary[]>([])
+  const tripVersionsLoading = ref(false)
+  const tripVersionsError = ref("")
+  const tripVersionsHasMore = ref(false)
+  const restoringTripVersion = ref<number | null>(null)
+  const savingTripVersionLabel = ref<number | null>(null)
   const replanningDays = ref<number[]>([])
   const expandedDays = ref<number[]>([])
   const focusedWorkspaceDays = ref<number[]>([])
@@ -84,6 +91,8 @@ export function usePlannerPageState() {
     recentPlanningJobs,
     recentPlanningJobsError,
     recentPlanningJobsLoading,
+    restoringTripVersion,
+    savingTripVersionLabel,
     recentTrips,
     recentTripsError,
     recentTripsLoading,
@@ -97,6 +106,10 @@ export function usePlannerPageState() {
     tripPrechecking,
     tripReplanning,
     tripSaving,
+    tripVersions,
+    tripVersionsError,
+    tripVersionsLoading,
+    tripVersionsHasMore,
     retryingPlanningJobId,
     workspaceBusyMessage,
   }

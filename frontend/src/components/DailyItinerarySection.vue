@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { nextTick, ref, watch, type ComponentPublicInstance } from "vue";
+
 import DailyItineraryCard from "./DailyItineraryCard.vue";
 import type {
   DailyForecast,
@@ -24,6 +26,21 @@ const emit = defineEmits<{
   (event: "toggle-lock", dayNumber: number): void;
   (event: "replan-day", dayNumber: number): void;
 }>();
+
+const dayCardElements = ref<Record<number, HTMLElement | null>>({});
+
+watch(
+  () => [...(props.highlightedDays ?? [])],
+  async (days) => {
+    const targetDay = days[0];
+    if (!targetDay) return;
+    await nextTick();
+    dayCardElements.value[targetDay]?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  },
+);
 
 function isDayExpanded(dayNumber: number) {
   return props.expandedDays.includes(dayNumber);
@@ -86,6 +103,13 @@ function isDayReplanning(dayNumber: number) {
 function isDayHighlighted(dayNumber: number) {
   return props.highlightedDays?.includes(dayNumber) ?? false;
 }
+
+function setDayCardElement(
+  dayNumber: number,
+  element: Element | ComponentPublicInstance | null,
+) {
+  dayCardElements.value[dayNumber] = element instanceof HTMLElement ? element : null;
+}
 </script>
 
 <template>
@@ -106,22 +130,26 @@ function isDayHighlighted(dayNumber: number) {
       </span>
     </div>
     <div class="mt-5 space-y-4">
-      <DailyItineraryCard
+      <div
         v-for="(day, index) in days"
         :key="`${day.day_number}-${day.date}-${index}`"
-        :day="day"
-        :expanded="isDayExpanded(day.day_number)"
-        :route-summaries="getDayRoutes(day)"
-        :weather="getDayWeather(day)"
-        :meal-recommendations="getMealRecommendations(day)"
-        :reservations="getDayReservations(day)"
-        :locked="isDayLocked(day.day_number)"
-        :replanning="isDayReplanning(day.day_number)"
-        :highlighted="isDayHighlighted(day.day_number)"
-        @toggle="toggleDay"
-        @toggle-lock="emit('toggle-lock', $event)"
-        @replan-day="emit('replan-day', $event)"
-      />
+        :ref="(element) => setDayCardElement(day.day_number, element)"
+      >
+        <DailyItineraryCard
+          :day="day"
+          :expanded="isDayExpanded(day.day_number)"
+          :route-summaries="getDayRoutes(day)"
+          :weather="getDayWeather(day)"
+          :meal-recommendations="getMealRecommendations(day)"
+          :reservations="getDayReservations(day)"
+          :locked="isDayLocked(day.day_number)"
+          :replanning="isDayReplanning(day.day_number)"
+          :highlighted="isDayHighlighted(day.day_number)"
+          @toggle="toggleDay"
+          @toggle-lock="emit('toggle-lock', $event)"
+          @replan-day="emit('replan-day', $event)"
+        />
+      </div>
     </div>
   </article>
 </template>

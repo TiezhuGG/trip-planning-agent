@@ -30,6 +30,10 @@ from app.schemas.planning import (
     ReplanRequest,
     TripSummary,
     TripWorkspace,
+    TripWorkspaceVersionListResponse,
+    TripWorkspaceVersion,
+    TripWorkspaceVersionCreateRequest,
+    TripWorkspaceVersionSummary,
     TripWorkspacePatchRequest,
 )
 from app.services.trip_workspace_calendar import CalendarExportResult
@@ -61,6 +65,11 @@ def _workspace_payload(**updates):
             "travelers": {"adults": 2, "children": 0, "seniors": 0},
         },
         "manual_notes": "",
+        "version_origin_kind": "updated",
+        "restored_from_version": None,
+        "version_label": "",
+        "is_starred": False,
+        "is_archived": False,
         "locked_day_numbers": [],
         "reservations": [],
         "timeline": [],
@@ -81,6 +90,8 @@ class _FakeTripWorkspaceService:
         self.workspace = workspace
         self.error = error
         self.export_scopes: list[str] = []
+        self.versions: list[TripWorkspaceVersionSummary] = []
+        self.version_snapshot: TripWorkspaceVersion | None = None
 
     async def export_trip_calendar(self, trip_id: str, *, scope: str = "full") -> CalendarExportResult:
         assert trip_id
@@ -134,6 +145,92 @@ class _FakeTripWorkspaceService:
                 title="上海 2 天行程",
             )
         ]
+
+    async def list_trip_versions(
+        self,
+        trip_id: str,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> TripWorkspaceVersionListResponse:
+        assert trip_id
+        assert limit >= 1
+        assert offset >= 0
+        if self.error is not None:
+            raise self.error
+        items = self.versions[offset : offset + limit]
+        return TripWorkspaceVersionListResponse(
+            items=items,
+            total=len(self.versions),
+            has_more=offset + len(items) < len(self.versions),
+        )
+
+    async def get_trip_version(self, trip_id: str, version: int) -> TripWorkspaceVersion:
+        assert trip_id
+        assert version >= 1
+        if self.error is not None:
+            raise self.error
+        assert self.version_snapshot is not None
+        return self.version_snapshot
+
+    async def restore_trip_version(self, trip_id: str, version: int) -> TripWorkspace:
+        assert trip_id
+        assert version >= 1
+        if self.error is not None:
+            raise self.error
+        assert self.workspace is not None
+        return self.workspace
+
+    async def create_trip_version_snapshot(
+        self,
+        trip_id: str,
+        payload: TripWorkspaceVersionCreateRequest,
+    ) -> TripWorkspace:
+        assert trip_id
+        assert isinstance(payload, TripWorkspaceVersionCreateRequest)
+        if self.error is not None:
+            raise self.error
+        assert self.workspace is not None
+        return self.workspace
+
+    async def delete_trip_version(self, trip_id: str, version: int) -> None:
+        assert trip_id
+        assert version >= 1
+        if self.error is not None:
+            raise self.error
+        return None
+
+    async def update_trip_version_label(
+        self,
+        trip_id: str,
+        version: int,
+        version_label: str,
+    ) -> TripWorkspace:
+        assert trip_id
+        assert version >= 1
+        assert isinstance(version_label, str)
+        if self.error is not None:
+            raise self.error
+        assert self.workspace is not None
+        return self.workspace
+
+    async def update_trip_version_meta(
+        self,
+        trip_id: str,
+        version: int,
+        *,
+        version_label: str,
+        is_starred: bool | None,
+        is_archived: bool | None,
+    ) -> TripWorkspace:
+        assert trip_id
+        assert version >= 1
+        assert isinstance(version_label, str)
+        _ = is_starred
+        _ = is_archived
+        if self.error is not None:
+            raise self.error
+        assert self.workspace is not None
+        return self.workspace
 
 
 class _FakePlanningJobService:
@@ -586,3 +683,254 @@ def test_regenerate_trip_share_route_returns_workspace(monkeypatch) -> None:
     assert response.status_code == 200
     assert response.json()["share_enabled"] is True
     assert response.json()["share_token"] == "share-456"
+
+
+def test_list_trip_versions_route_returns_versions(monkeypatch) -> None:
+    workspace_service = _FakeTripWorkspaceService()
+    workspace_service.versions = [
+        TripWorkspaceVersionSummary(
+            trip_id="trip-123",
+            version=3,
+            status="ready",
+            updated_at="2026-04-15T02:00:00Z",
+            created_at="2026-04-15T00:00:00Z",
+            has_result=True,
+            title="v3",
+            version_label="收藏版",
+            is_starred=True,
+            is_archived=False,
+            is_current=True,
+            version_origin_kind="restored",
+            restored_from_version=1,
+        ),
+        TripWorkspaceVersionSummary(
+            trip_id="trip-123",
+            version=2,
+            status="ready",
+            updated_at="2026-04-15T01:00:00Z",
+            created_at="2026-04-15T00:00:00Z",
+            has_result=True,
+            title="v2",
+            version_label="",
+            is_starred=False,
+            is_archived=False,
+            is_current=False,
+            version_origin_kind="updated",
+            restored_from_version=None,
+        ),
+    ]
+    client = _make_client(monkeypatch, workspace_service)
+
+    response = client.get("/api/v1/trips/trip-123/versions?limit=5")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 2
+    assert payload["has_more"] is False
+    assert len(payload["items"]) == 2
+    assert payload["items"][0]["version"] == 3
+    assert payload["items"][0]["is_current"] is True
+    assert payload["items"][0]["version_origin_kind"] == "restored"
+    assert payload["items"][0]["version_label"] == "收藏版"
+    assert payload["items"][0]["is_starred"] is True
+    assert payload["items"][0]["restored_from_version"] == 1
+
+
+def test_list_trip_versions_route_supports_offset(monkeypatch) -> None:
+    workspace_service = _FakeTripWorkspaceService()
+    workspace_service.versions = [
+        TripWorkspaceVersionSummary(
+            trip_id="trip-123",
+            version=4,
+            status="ready",
+            updated_at="2026-04-15T03:00:00Z",
+            created_at="2026-04-15T00:00:00Z",
+            has_result=True,
+            title="v4",
+            version_label="",
+            is_starred=False,
+            is_archived=False,
+            is_current=True,
+            version_origin_kind="updated",
+            restored_from_version=None,
+        ),
+        TripWorkspaceVersionSummary(
+            trip_id="trip-123",
+            version=3,
+            status="ready",
+            updated_at="2026-04-15T02:00:00Z",
+            created_at="2026-04-15T00:00:00Z",
+            has_result=True,
+            title="v3",
+            version_label="",
+            is_starred=False,
+            is_archived=False,
+            is_current=False,
+            version_origin_kind="updated",
+            restored_from_version=None,
+        ),
+        TripWorkspaceVersionSummary(
+            trip_id="trip-123",
+            version=2,
+            status="ready",
+            updated_at="2026-04-15T01:00:00Z",
+            created_at="2026-04-15T00:00:00Z",
+            has_result=True,
+            title="v2",
+            version_label="",
+            is_starred=False,
+            is_archived=False,
+            is_current=False,
+            version_origin_kind="updated",
+            restored_from_version=None,
+        ),
+    ]
+    client = _make_client(monkeypatch, workspace_service)
+
+    response = client.get("/api/v1/trips/trip-123/versions?limit=1&offset=1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 3
+    assert payload["has_more"] is True
+    assert len(payload["items"]) == 1
+    assert payload["items"][0]["version"] == 3
+
+
+def test_get_trip_version_route_returns_snapshot(monkeypatch) -> None:
+    workspace_service = _FakeTripWorkspaceService()
+    workspace_service.version_snapshot = TripWorkspaceVersion(
+        trip_id="trip-123",
+        version=2,
+        captured_at="2026-04-15T01:00:00Z",
+        is_current=False,
+        workspace=TripWorkspace.model_validate(
+            _workspace_payload(version=2, restored_from_version=1)
+        ),
+    )
+    client = _make_client(monkeypatch, workspace_service)
+
+    response = client.get("/api/v1/trips/trip-123/versions/2")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["trip_id"] == "trip-123"
+    assert payload["version"] == 2
+    assert payload["workspace"]["id"] == "trip-123"
+    assert payload["workspace"]["version_origin_kind"] == "updated"
+    assert payload["workspace"]["restored_from_version"] == 1
+
+
+def test_restore_trip_version_route_returns_restored_workspace(monkeypatch) -> None:
+    workspace = TripWorkspace.model_validate(
+        _workspace_payload(version=4, restored_from_version=2)
+    )
+    client = _make_client(
+        monkeypatch,
+        _FakeTripWorkspaceService(workspace=workspace),
+    )
+
+    response = client.post("/api/v1/trips/trip-123/versions/2/restore")
+
+    assert response.status_code == 200
+    assert response.json()["id"] == "trip-123"
+    assert response.json()["version"] == 4
+    assert response.json()["version_origin_kind"] == "updated"
+    assert response.json()["restored_from_version"] == 2
+
+
+def test_create_trip_version_snapshot_route_returns_workspace(monkeypatch) -> None:
+    workspace = TripWorkspace.model_validate(
+        _workspace_payload(version=5, version_label="手动快照", version_origin_kind="snapshot")
+    )
+    client = _make_client(
+        monkeypatch,
+        _FakeTripWorkspaceService(workspace=workspace),
+    )
+
+    response = client.post(
+        "/api/v1/trips/trip-123/versions",
+        json={"version_label": "手动快照"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["version"] == 5
+    assert response.json()["version_label"] == "手动快照"
+    assert response.json()["version_origin_kind"] == "snapshot"
+
+
+def test_delete_trip_version_route_returns_204(monkeypatch) -> None:
+    client = _make_client(
+        monkeypatch,
+        _FakeTripWorkspaceService(),
+    )
+
+    response = client.delete("/api/v1/trips/trip-123/versions/3")
+
+    assert response.status_code == 204
+
+
+def test_delete_trip_version_route_returns_422_for_validation_error(monkeypatch) -> None:
+    client = _make_client(
+        monkeypatch,
+        _FakeTripWorkspaceService(error=ValueError("仅支持删除手动保存的版本快照。")),
+    )
+
+    response = client.delete("/api/v1/trips/trip-123/versions/3")
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == {
+      "code": "TRIP_VERSION_DELETE_VALIDATION_ERROR",
+      "message": "仅支持删除手动保存的版本快照。",
+    }
+
+
+def test_update_trip_version_label_route_returns_workspace(monkeypatch) -> None:
+    workspace = TripWorkspace.model_validate(
+        _workspace_payload(version=4, version_label="已标记版本", is_starred=True)
+    )
+    client = _make_client(
+        monkeypatch,
+        _FakeTripWorkspaceService(workspace=workspace),
+    )
+
+    response = client.patch(
+        "/api/v1/trips/trip-123/versions/4/label",
+        json={"version_label": "已标记版本"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["version"] == 4
+    assert response.json()["version_label"] == "已标记版本"
+
+
+def test_update_trip_version_meta_route_returns_workspace(monkeypatch) -> None:
+    workspace = TripWorkspace.model_validate(
+        _workspace_payload(version=4, version_label="收藏版", is_starred=True, is_archived=True)
+    )
+    client = _make_client(
+        monkeypatch,
+        _FakeTripWorkspaceService(workspace=workspace),
+    )
+
+    response = client.patch(
+        "/api/v1/trips/trip-123/versions/4/meta",
+        json={"version_label": "收藏版", "is_starred": True, "is_archived": True},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["version"] == 4
+    assert response.json()["is_starred"] is True
+    assert response.json()["is_archived"] is True
+
+
+def test_get_trip_version_route_returns_404_when_missing(monkeypatch) -> None:
+    client = _make_client(
+        monkeypatch,
+        _FakeTripWorkspaceService(error=KeyError("trip version missing")),
+    )
+
+    response = client.get("/api/v1/trips/trip-123/versions/99")
+
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "TRIP_VERSION_NOT_FOUND"

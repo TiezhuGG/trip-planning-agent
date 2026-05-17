@@ -13,6 +13,7 @@ import type {
   TripWorkspace,
 } from "../types/planning";
 import { formatDayGapLabel } from "../utils/dayGapLabels";
+import { resolveWorkspacePrecheckState } from "../utils/workspacePrecheckState";
 import { formatDateTimeZhCn } from "../utils/workspaceFormatting";
 import {
   formatWorkspaceStatusLabel,
@@ -79,6 +80,10 @@ const precheckStateClass = computed(() => {
   }
   return "border-emerald-100 bg-emerald-50 text-emerald-700";
 });
+
+const sharedPrecheckState = computed(() =>
+  resolveWorkspacePrecheckState(props.workspace, props.recentPlanningJobs),
+);
 
 const shareStateLabel = computed(() => {
   if (!props.workspace) return "未保存";
@@ -292,9 +297,9 @@ function isHighlightedDay(dayNumber: number) {
         <div class="mt-3 grid gap-3 lg:grid-cols-2">
           <div
             class="rounded-[18px] border px-3 py-3 text-xs leading-5"
-            :class="precheckStateClass"
+            :class="sharedPrecheckState.className"
           >
-            <div class="font-medium">预检状态：{{ precheckStateLabel }}</div>
+            <div class="font-medium">预检状态：{{ sharedPrecheckState.label }}</div>
             <div class="mt-1">
               {{
                 !props.workspace || props.workspace.status === "draft"

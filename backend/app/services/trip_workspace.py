@@ -9,6 +9,10 @@ from app.schemas.planning import (
     TripSummary,
     TripCreateRequest,
     TripWorkspace,
+    TripWorkspaceVersion,
+    TripWorkspaceVersionListResponse,
+    TripWorkspaceVersionCreateRequest,
+    TripWorkspaceVersionSummary,
     TripWorkspacePatchRequest,
 )
 from app.services.planner import TravelPlannerService
@@ -96,6 +100,209 @@ class TripWorkspaceService(TripWorkspaceRuntimeMixin):
             workspaces = self.store.list_recent(limit=max(1, int(limit)))
         return [self._build_trip_summary(item) for item in workspaces]
 
+    async def list_trip_versions(
+        self,
+        trip_id: str,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> TripWorkspaceVersionListResponse:
+        current = await self._read_trip(trip_id)
+        if current is None:
+            raise KeyError(f"trip {trip_id} not found")
+
+        async with self._lock:
+            normalized_limit = max(1, int(limit))
+            normalized_offset = max(0, int(offset))
+            store_limit = normalized_limit
+            total_versions = self.store.count_versions(trip_id)
+            workspaces = self.store.list_versions(
+                trip_id,
+                limit=store_limit,
+                offset=normalized_offset,
+            )
+
+        if normalized_offset == 0:
+            workspaces = [current, *[item for item in workspaces if item.version != current.version]]
+            workspaces.sort(key=lambda item: item.version, reverse=True)
+            workspaces = workspaces[:normalized_limit]
+        items = [
+            self._build_trip_version_summary(item, current_version=current.version)
+            for item in workspaces
+        ]
+        return TripWorkspaceVersionListResponse(
+            items=items,
+            total=total_versions,
+            has_more=normalized_offset + len(items) < total_versions,
+        )
+
+    async def get_trip_version(
+        self,
+        trip_id: str,
+        version: int,
+    ) -> TripWorkspaceVersion:
+        current = await self._read_trip(trip_id)
+        if current is None:
+            raise KeyError(f"trip {trip_id} not found")
+
+        workspace = await self._read_trip_version(trip_id, version)
+        if workspace is None:
+            raise KeyError(f"trip version {version} for trip {trip_id} not found")
+
+        return self._build_trip_version_snapshot(
+            workspace,
+            current_version=current.version,
+        )
+
+    async def update_trip_version_label(
+        self,
+        trip_id: str,
+        version: int,
+        version_label: str,
+    ) -> TripWorkspace:
+        return await self.update_trip_version_meta(
+            trip_id,
+            version,
+            version_label=version_label,
+            is_starred=None,
+            is_archived=None,
+        )
+
+    async def create_trip_version_snapshot(
+        self,
+        trip_id: str,
+        payload: TripWorkspaceVersionCreateRequest | None = None,
+    ) -> TripWorkspace:
+        current = await self._read_trip(trip_id)
+        if current is None:
+            raise KeyError(f"trip {trip_id} not found")
+
+        normalized_label = (payload.version_label if payload is not None else "").strip()
+        now = datetime.now(timezone.utc)
+        snapshot = current.model_copy(
+            update={
+                "version": current.version + 1,
+                "updated_at": now,
+                "version_label": normalized_label,
+                "version_origin_kind": "snapshot",
+                "restored_from_version": None,
+                "timeline": current.timeline,
+            },
+            deep=True,
+        )
+        snapshot = self._append_workspace_event(
+            snapshot,
+            kind="snapshot",
+            title="已手动保存版本快照",
+            summary=self._build_snapshot_summary(
+                current=snapshot,
+            ),
+        )
+        await self._save_trip(snapshot)
+        return snapshot.model_copy(deep=True)
+
+    async def delete_trip_version(
+        self,
+        trip_id: str,
+        version: int,
+    ) -> None:
+        current = await self._read_trip(trip_id)
+        if current is None:
+            raise KeyError(f"trip {trip_id} not found")
+        if current.version == version:
+            raise ValueError("当前版本不能删除。")
+
+        target = await self._read_trip_version(trip_id, version)
+        if target is None:
+            raise KeyError(f"trip version {version} for trip {trip_id} not found")
+        if target.version_origin_kind != "snapshot":
+            raise ValueError("仅支持删除手动保存的版本快照。")
+
+        async with self._lock:
+            self.store.delete_version(trip_id, version)
+
+    async def update_trip_version_meta(
+        self,
+        trip_id: str,
+        version: int,
+        *,
+        version_label: str,
+        is_starred: bool | None,
+        is_archived: bool | None,
+    ) -> TripWorkspace:
+        current = await self._read_trip(trip_id)
+        if current is None:
+            raise KeyError(f"trip {trip_id} not found")
+
+        target = await self._read_trip_version(trip_id, version)
+        if target is None:
+            raise KeyError(f"trip version {version} for trip {trip_id} not found")
+
+        normalized_label = version_label.strip()
+        updated_snapshot = target.model_copy(
+            update={
+                "version_label": normalized_label,
+                "is_starred": target.is_starred if is_starred is None else is_starred,
+                "is_archived": target.is_archived if is_archived is None else is_archived,
+            },
+            deep=True,
+        )
+
+        if current.version == version:
+            updated_current = current.model_copy(
+                update={
+                    "version_label": normalized_label,
+                    "is_starred": current.is_starred if is_starred is None else is_starred,
+                    "is_archived": current.is_archived if is_archived is None else is_archived,
+                },
+                deep=True,
+            )
+            await self._save_trip(updated_current)
+            return updated_current.model_copy(deep=True)
+
+        await self._save_trip_version_snapshot(updated_snapshot)
+        return current.model_copy(deep=True)
+
+    async def restore_trip_version(
+        self,
+        trip_id: str,
+        version: int,
+    ) -> TripWorkspace:
+        current = await self._read_trip(trip_id)
+        if current is None:
+            raise KeyError(f"trip {trip_id} not found")
+
+        target = await self._read_trip_version(trip_id, version)
+        if target is None:
+            raise KeyError(f"trip version {version} for trip {trip_id} not found")
+
+        now = datetime.now(timezone.utc)
+        restored = target.model_copy(
+            update={
+                "id": current.id,
+                "share_token": current.share_token,
+                "share_enabled": current.share_enabled,
+                "version": current.version + 1,
+                "created_at": current.created_at,
+                "updated_at": now,
+                "version_origin_kind": "restored",
+                "restored_from_version": target.version,
+                "timeline": current.timeline,
+            },
+            deep=True,
+        )
+        restored = self._append_workspace_event(
+            restored,
+            kind="restored",
+            title=f"已恢复到 v{target.version}",
+            summary=self._build_restore_summary(
+                restored_from=target,
+                restored_to=restored,
+            ),
+        )
+        await self._save_trip(restored)
+        return restored.model_copy(deep=True)
+
     async def get_trip_by_share_token(self, share_token: str) -> TripWorkspace:
         async with self._lock:
             workspace = self.store.get_by_share_token(share_token)
@@ -146,6 +353,13 @@ class TripWorkspaceService(TripWorkspaceRuntimeMixin):
             ),
             reservations=reservations,
             response_snapshot=response_snapshot,
+        )
+        updated = updated.model_copy(
+            update={
+                "version_origin_kind": "generated" if payload.generate_response else "updated",
+                "restored_from_version": None,
+            },
+            deep=True,
         )
         updated = self._append_workspace_event(
             updated,
@@ -207,6 +421,8 @@ class TripWorkspaceService(TripWorkspaceRuntimeMixin):
                     merged_response,
                     last_precheck_summary=current.last_precheck_summary,
                 ),
+                "version_origin_kind": "replanned",
+                "restored_from_version": None,
                 "last_replan_summary": replan_summary,
                 "response_snapshot": merged_response,
             },
@@ -254,6 +470,8 @@ class TripWorkspaceService(TripWorkspaceRuntimeMixin):
                     refreshed_response,
                     last_precheck_summary=precheck_summary,
                 ),
+                "version_origin_kind": "prechecked",
+                "restored_from_version": None,
                 "last_precheck_summary": precheck_summary,
                 "response_snapshot": refreshed_response,
             },
@@ -279,6 +497,8 @@ class TripWorkspaceService(TripWorkspaceRuntimeMixin):
                 "version": current.version + 1,
                 "updated_at": datetime.now(timezone.utc),
                 "share_enabled": False,
+                "version_origin_kind": "share_revoked",
+                "restored_from_version": None,
             },
             deep=True,
         )
@@ -302,6 +522,8 @@ class TripWorkspaceService(TripWorkspaceRuntimeMixin):
                 "updated_at": datetime.now(timezone.utc),
                 "share_enabled": True,
                 "share_token": generate_share_token(),
+                "version_origin_kind": "share_regenerated",
+                "restored_from_version": None,
             },
             deep=True,
         )
@@ -362,9 +584,9 @@ class TripWorkspaceService(TripWorkspaceRuntimeMixin):
         )
 
     def _build_trip_summary(self, workspace: TripWorkspace) -> TripSummary:
-        title = ""
+        title = workspace.version_label.strip()
         if workspace.response_snapshot is not None:
-            title = workspace.response_snapshot.plan.title
+            title = title or workspace.response_snapshot.plan.title
         if not title:
             title = f"{workspace.request_brief.destination} {workspace.request_brief.days} 天行程"
         return TripSummary(
@@ -383,3 +605,86 @@ class TripWorkspaceService(TripWorkspaceRuntimeMixin):
             has_result=workspace.response_snapshot is not None,
             title=title,
         )
+
+    def _build_restore_summary(
+        self,
+        *,
+        restored_from: TripWorkspace,
+        restored_to: TripWorkspace,
+    ) -> str:
+        return (
+            f"已将工作区恢复到 v{restored_from.version} 的状态，"
+            f"当前已生成新版本 v{restored_to.version}。"
+        )
+
+    def _build_snapshot_summary(
+        self,
+        *,
+        current: TripWorkspace,
+    ) -> str:
+        label = current.version_label.strip()
+        if label:
+            return (
+                f"已将当前工作区内容保存为 v{current.version}，"
+                f"标签为“{label}”。"
+            )
+        return (
+            f"已基于当前工作区保存手动快照，"
+            f"生成新版本 v{current.version}。"
+        )
+
+    def _build_trip_version_summary(
+        self,
+        workspace: TripWorkspace,
+        *,
+        current_version: int,
+    ) -> TripWorkspaceVersionSummary:
+        title = workspace.version_label.strip()
+        if workspace.response_snapshot is not None:
+            title = title or workspace.response_snapshot.plan.title
+        if not title:
+            title = f"{workspace.request_brief.destination} {workspace.request_brief.days} 天行程"
+        return TripWorkspaceVersionSummary(
+            trip_id=workspace.id,
+            version=workspace.version,
+            status=workspace.status,
+            updated_at=workspace.updated_at,
+            created_at=workspace.created_at,
+            has_result=workspace.response_snapshot is not None,
+            title=title,
+            version_label=workspace.version_label,
+            is_starred=workspace.is_starred,
+            is_archived=workspace.is_archived,
+            is_current=workspace.version == current_version,
+            version_origin_kind=workspace.version_origin_kind,
+            restored_from_version=workspace.restored_from_version,
+        )
+
+    def _build_trip_version_snapshot(
+        self,
+        workspace: TripWorkspace,
+        *,
+        current_version: int,
+    ) -> TripWorkspaceVersion:
+        return TripWorkspaceVersion(
+            trip_id=workspace.id,
+            version=workspace.version,
+            captured_at=workspace.updated_at,
+            is_current=workspace.version == current_version,
+            workspace=workspace.model_copy(deep=True),
+        )
+
+    async def _save_trip_version_snapshot(self, workspace: TripWorkspace) -> None:
+        async with self._lock:
+            self.store.save_version_snapshot(workspace)
+
+    async def _read_trip_version(
+        self,
+        trip_id: str,
+        version: int,
+    ) -> TripWorkspace | None:
+        async with self._lock:
+            workspace = self.store.get_version(trip_id, version)
+            if workspace is None:
+                return None
+            return workspace.model_copy(deep=True)

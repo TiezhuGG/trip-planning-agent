@@ -11,6 +11,7 @@ import type {
   TripSummary,
   TripPlanningRequest,
   TripWorkspace,
+  TripWorkspaceVersionSummary,
 } from "../types/planning";
 import type { PlannerInputCheck } from "./usePlannerDerivedState";
 import type {
@@ -80,6 +81,12 @@ type ResultViewModelOptions = {
   recentPlanningJobs: Ref<PlanningJobSummary[]>;
   recentPlanningJobsLoading: Ref<boolean>;
   recentPlanningJobsError: Ref<string>;
+  tripVersions: Ref<TripWorkspaceVersionSummary[]>;
+  tripVersionsLoading: Ref<boolean>;
+  tripVersionsError: Ref<string>;
+  tripVersionsHasMore: Ref<boolean>;
+  restoringTripVersion: Ref<number | null>;
+  savingTripVersionLabel: Ref<number | null>;
   replanningDays: Ref<number[]>;
   expandedDays: Ref<number[]>;
   focusedWorkspaceDays: Ref<number[]>;
@@ -155,6 +162,12 @@ export function usePlannerViewModels(
     recentPlanningJobs: resultOptions.recentPlanningJobs.value,
     recentPlanningJobsLoading: resultOptions.recentPlanningJobsLoading.value,
     recentPlanningJobsError: resultOptions.recentPlanningJobsError.value,
+    tripVersions: resultOptions.tripVersions.value,
+    tripVersionsLoading: resultOptions.tripVersionsLoading.value,
+    tripVersionsError: resultOptions.tripVersionsError.value,
+    tripVersionsHasMore: resultOptions.tripVersionsHasMore.value,
+    restoringTripVersion: resultOptions.restoringTripVersion.value,
+    savingTripVersionLabel: resultOptions.savingTripVersionLabel.value,
     replanningDays: resultOptions.replanningDays.value,
     expandedDays: resultOptions.expandedDays.value,
     focusedWorkspaceDays: resultOptions.focusedWorkspaceDays.value,

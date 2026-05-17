@@ -5,7 +5,7 @@ import {
   collectPrecheckAffectedDays,
   countPrecheckAttentionItems,
   hasRunningPrecheckJob,
-  isPrecheckSummaryStale,
+  shouldRefreshPrecheck,
 } from "../composables/tripWorkspaceExportReadiness";
 import { getReservationTargetDaysById } from "../composables/tripWorkspaceReservationCoverageHelpers";
 import type {
@@ -105,12 +105,7 @@ const checklistItems = computed<ChecklistItem[]>(() => {
   const precheckAttentionCount = workspace.last_precheck_summary
     ? countPrecheckAttentionItems(workspace.last_precheck_summary)
     : 0;
-  const needsPrecheckRefresh =
-    workspace.status !== "draft" &&
-    !hasRunningPrecheckJob(workspace.id, props.jobs) &&
-    (!workspace.last_precheck_summary ||
-      isPrecheckSummaryStale(workspace) ||
-      precheckAttentionCount > 0);
+  const needsPrecheckRefresh = shouldRefreshPrecheck(workspace, props.jobs);
 
   if (needsPrecheckRefresh) {
     const affectedDays = collectPrecheckAffectedDays(workspace);

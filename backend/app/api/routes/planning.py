@@ -18,7 +18,13 @@ from app.schemas.planning import (
     TripPlanningRequest,
     TripSummary,
     TripWorkspace,
+    TripWorkspaceVersion,
+    TripWorkspaceVersionCreateRequest,
+    TripWorkspaceVersionListResponse,
+    TripWorkspaceVersionSummary,
     TripWorkspacePatchRequest,
+    TripWorkspaceVersionLabelUpdateRequest,
+    TripWorkspaceVersionMetaUpdateRequest,
 )
 from app.services.planner import TravelPlannerService
 from app.services.planning_job_store import create_planning_job_store
@@ -142,6 +148,167 @@ async def list_recent_trips(
             detail={
                 "code": "TRIP_LIST_ERROR",
                 "message": "Failed to load recent trip workspaces.",
+            },
+        ) from exc
+
+
+@router.get("/trips/{trip_id}/versions", response_model=TripWorkspaceVersionListResponse)
+async def list_trip_versions(
+    trip_id: str,
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0, le=10000),
+) -> TripWorkspaceVersionListResponse:
+    try:
+        return await get_trip_workspace_service().list_trip_versions(
+            trip_id,
+            limit=limit,
+            offset=offset,
+        )
+    except KeyError as exc:
+        raise_trip_not_found_error(exc)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "TRIP_VERSION_LIST_ERROR",
+                "message": "Failed to load trip workspace versions.",
+            },
+        ) from exc
+
+
+@router.get("/trips/{trip_id}/versions/{version}", response_model=TripWorkspaceVersion)
+async def get_trip_version(
+    trip_id: str,
+    version: int,
+) -> TripWorkspaceVersion:
+    try:
+        return await get_trip_workspace_service().get_trip_version(trip_id, version)
+    except KeyError as exc:
+        if "version" in str(exc).lower():
+            raise_trip_version_not_found_error(exc)
+        raise_trip_not_found_error(exc)
+
+
+@router.post("/trips/{trip_id}/versions/{version}/restore", response_model=TripWorkspace)
+async def restore_trip_version(
+    trip_id: str,
+    version: int,
+) -> TripWorkspace:
+    try:
+        return await get_trip_workspace_service().restore_trip_version(trip_id, version)
+    except KeyError as exc:
+        if "version" in str(exc).lower():
+            raise_trip_version_not_found_error(exc)
+        raise_trip_not_found_error(exc)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "TRIP_VERSION_RESTORE_ERROR",
+                "message": "Failed to restore trip workspace version.",
+            },
+        ) from exc
+
+
+@router.post("/trips/{trip_id}/versions", response_model=TripWorkspace)
+async def create_trip_version_snapshot(
+    trip_id: str,
+    payload: TripWorkspaceVersionCreateRequest,
+) -> TripWorkspace:
+    try:
+        return await get_trip_workspace_service().create_trip_version_snapshot(trip_id, payload)
+    except KeyError as exc:
+        raise_trip_not_found_error(exc)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "TRIP_VERSION_CREATE_ERROR",
+                "message": "Failed to create trip workspace version snapshot.",
+            },
+        ) from exc
+
+
+@router.delete("/trips/{trip_id}/versions/{version}", status_code=204)
+async def delete_trip_version(
+    trip_id: str,
+    version: int,
+) -> Response:
+    try:
+        await get_trip_workspace_service().delete_trip_version(trip_id, version)
+        return Response(status_code=204)
+    except KeyError as exc:
+        if "version" in str(exc).lower():
+            raise_trip_version_not_found_error(exc)
+        raise_trip_not_found_error(exc)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "TRIP_VERSION_DELETE_VALIDATION_ERROR",
+                "message": str(exc),
+            },
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "TRIP_VERSION_DELETE_ERROR",
+                "message": "Failed to delete trip workspace version.",
+            },
+        ) from exc
+
+
+@router.patch("/trips/{trip_id}/versions/{version}/label", response_model=TripWorkspace)
+async def update_trip_version_label(
+    trip_id: str,
+    version: int,
+    payload: TripWorkspaceVersionLabelUpdateRequest,
+) -> TripWorkspace:
+    try:
+        return await get_trip_workspace_service().update_trip_version_label(
+            trip_id,
+            version,
+            payload.version_label,
+        )
+    except KeyError as exc:
+        if "version" in str(exc).lower():
+            raise_trip_version_not_found_error(exc)
+        raise_trip_not_found_error(exc)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "TRIP_VERSION_LABEL_UPDATE_ERROR",
+                "message": "Failed to update trip workspace version label.",
+            },
+        ) from exc
+
+
+@router.patch("/trips/{trip_id}/versions/{version}/meta", response_model=TripWorkspace)
+async def update_trip_version_meta(
+    trip_id: str,
+    version: int,
+    payload: TripWorkspaceVersionMetaUpdateRequest,
+) -> TripWorkspace:
+    try:
+        return await get_trip_workspace_service().update_trip_version_meta(
+            trip_id,
+            version,
+            version_label=payload.version_label,
+            is_starred=payload.is_starred,
+            is_archived=payload.is_archived,
+        )
+    except KeyError as exc:
+        if "version" in str(exc).lower():
+            raise_trip_version_not_found_error(exc)
+        raise_trip_not_found_error(exc)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "TRIP_VERSION_META_UPDATE_ERROR",
+                "message": "Failed to update trip workspace version metadata.",
             },
         ) from exc
 
@@ -391,6 +558,16 @@ def raise_trip_not_found_error(exc: KeyError) -> None:
         detail={
             "code": "TRIP_NOT_FOUND",
             "message": "Trip workspace not found.",
+        },
+    ) from exc
+
+
+def raise_trip_version_not_found_error(exc: KeyError) -> None:
+    raise HTTPException(
+        status_code=404,
+        detail={
+            "code": "TRIP_VERSION_NOT_FOUND",
+            "message": "Trip workspace version not found.",
         },
     ) from exc
 

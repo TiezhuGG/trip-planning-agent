@@ -85,7 +85,7 @@ function reservationTypeLabel(type: string) {
     <div class="flex flex-wrap items-start justify-between gap-4">
       <div>
         <div class="text-lg font-semibold text-ink">
-          第{{ day.day_number }} 天 · {{ day.theme }}
+          第 {{ day.day_number }} 天 · {{ day.theme }}
         </div>
         <div class="mt-2 text-sm text-slate-500">
           {{ day.date }}
@@ -103,7 +103,7 @@ function reservationTypeLabel(type: string) {
           v-if="highlighted"
           class="rounded-full border border-amber-200 bg-white px-4 py-2 text-sm text-amber-700 shadow-sm"
         >
-          刚刚更新
+          当前高亮
         </span>
         <button
           type="button"
@@ -246,10 +246,10 @@ function reservationTypeLabel(type: string) {
                   {{ route.title || `路线 ${routeIndex + 1}` }}
                 </div>
                 <div class="mt-2 text-xs text-slate-500">
-                  {{ route.from_name || "起点待定" }} → {{ route.to_name || "终点待定" }}
+                  {{ route.from_name || "起点待定" }} -> {{ route.to_name || "终点待定" }}
                 </div>
                 <div class="mt-2 text-xs text-slate-500">
-                  {{ route.distance_text || "距离待补全" }}
+                  {{ route.distance_text || "距离待补充" }}
                   {{ route.duration_text ? ` · ${route.duration_text}` : "" }}
                 </div>
                 <div class="mt-2 text-xs text-[#2f5a81]">

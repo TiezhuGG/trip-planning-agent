@@ -9,6 +9,7 @@ import type {
   ReservationItem,
   RouteSummary,
   TripWorkspace,
+  TripWorkspaceVersionSummary,
 } from "../types/planning";
 import type {
   DayGapRepairPayload,
@@ -30,6 +31,8 @@ import PlannerResultToolbar from "./PlannerResultToolbar.vue";
 import PlanningTelemetryPanel from "./PlanningTelemetryPanel.vue";
 import TripWorkspacePanel from "./TripWorkspacePanel.vue";
 
+type BatchVersionAction = "star" | "unstar" | "archive" | "unarchive";
+
 defineProps<{
   result: PlanningResponse;
   currentTrip: TripWorkspace | null;
@@ -44,6 +47,12 @@ defineProps<{
   recentPlanningJobs: PlanningJobSummary[];
   recentPlanningJobsLoading: boolean;
   recentPlanningJobsError: string;
+  tripVersions: TripWorkspaceVersionSummary[];
+  tripVersionsLoading: boolean;
+  tripVersionsError: string;
+  tripVersionsHasMore: boolean;
+  restoringTripVersion: number | null;
+  savingTripVersionLabel: number | null;
   replanningDays: number[];
   expandedDays: number[];
   focusedWorkspaceDays: number[];
@@ -76,9 +85,18 @@ defineEmits<{
   (e: "revoke-share"): void;
   (e: "regenerate-share"): void;
   (e: "replan-trip"): void;
+  (e: "create-trip-version-snapshot", versionLabel: string): void;
+  (e: "delete-trip-version", version: number): void;
   (e: "focus-workspace-days", dayNumbers: number[]): void;
   (e: "clear-workspace-focus"): void;
   (e: "refresh-precheck"): void;
+  (e: "restore-trip-version", version: number): void;
+  (e: "save-trip-version-label", version: number, versionLabel: string): void;
+  (e: "toggle-trip-version-star", version: TripWorkspaceVersionSummary): void;
+  (e: "toggle-trip-version-archive", version: TripWorkspaceVersionSummary): void;
+  (e: "batch-trip-version-update", versions: TripWorkspaceVersionSummary[], action: BatchVersionAction): void;
+  (e: "load-more-trip-versions"): void;
+  (e: "load-all-trip-versions"): void;
   (e: "retry-planning-job", job: PlanningJobSummary): void;
   (e: "repair-day-gap", payload: DayGapRepairPayload): void;
   (e: "add-reservation", item: Omit<ReservationItem, "id">): void;
@@ -121,6 +139,12 @@ defineEmits<{
       :recent-planning-jobs="recentPlanningJobs"
       :recent-planning-jobs-loading="recentPlanningJobsLoading"
       :recent-planning-jobs-error="recentPlanningJobsError"
+      :trip-versions="tripVersions"
+      :trip-versions-loading="tripVersionsLoading"
+      :trip-versions-error="tripVersionsError"
+      :trip-versions-has-more="tripVersionsHasMore"
+      :restoring-trip-version="restoringTripVersion"
+      :saving-trip-version-label="savingTripVersionLabel"
       :replanning-days="replanningDays"
       :focused-workspace-days="focusedWorkspaceDays"
       :reservations="currentTrip?.reservations ?? []"
@@ -137,9 +161,18 @@ defineEmits<{
       @revoke-share="$emit('revoke-share')"
       @regenerate-share="$emit('regenerate-share')"
       @export-calendar="(scope) => $emit('export-calendar', scope)"
+      @create-trip-version-snapshot="(versionLabel) => $emit('create-trip-version-snapshot', versionLabel)"
+      @delete-trip-version="(version) => $emit('delete-trip-version', version)"
       @focus-workspace-days="(dayNumbers) => $emit('focus-workspace-days', dayNumbers)"
       @clear-workspace-focus="$emit('clear-workspace-focus')"
       @replan-trip="$emit('replan-trip')"
+      @restore-trip-version="(version) => $emit('restore-trip-version', version)"
+      @save-trip-version-label="(version, versionLabel) => $emit('save-trip-version-label', version, versionLabel)"
+      @toggle-trip-version-star="(version) => $emit('toggle-trip-version-star', version)"
+      @toggle-trip-version-archive="(version) => $emit('toggle-trip-version-archive', version)"
+      @batch-trip-version-update="(versions, action) => $emit('batch-trip-version-update', versions, action)"
+      @load-more-trip-versions="$emit('load-more-trip-versions')"
+      @load-all-trip-versions="$emit('load-all-trip-versions')"
       @refresh-precheck="$emit('refresh-precheck')"
       @retry-planning-job="(job) => $emit('retry-planning-job', job)"
       @repair-day-gap="(payload) => $emit('repair-day-gap', payload)"

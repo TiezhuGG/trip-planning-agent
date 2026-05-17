@@ -21,6 +21,7 @@ import { usePlanningSupport } from "./composables/usePlanningSupport";
 import { useTripWorkspaceActions } from "./composables/useTripWorkspaceActions";
 import { useTripWorkspaceInsights } from "./composables/useTripWorkspaceInsights";
 import { isChineseCityName, splitText } from "./utils/tripPlannerForm";
+import type { TripWorkspaceVersionSummary } from "./types/planning";
 
 const showDevPanels = import.meta.env.DEV;
 
@@ -45,6 +46,8 @@ const {
   recentTrips,
   recentTripsError,
   recentTripsLoading,
+  restoringTripVersion,
+  savingTripVersionLabel,
   replanningDays,
   result,
   telemetry,
@@ -55,6 +58,10 @@ const {
   tripPrechecking,
   tripReplanning,
   tripSaving,
+  tripVersions,
+  tripVersionsError,
+  tripVersionsHasMore,
+  tripVersionsLoading,
   retryingPlanningJobId,
   workspaceBusyMessage,
 } = usePlannerPageState();
@@ -123,6 +130,12 @@ const workspaceActions = useTripWorkspaceActions({
   recentPlanningJobs,
   recentPlanningJobsLoading,
   recentPlanningJobsError,
+  tripVersions,
+  tripVersionsLoading,
+  tripVersionsError,
+  tripVersionsHasMore,
+  restoringTripVersion,
+  savingTripVersionLabel,
   recentTrips,
   recentTripsLoading,
   recentTripsError,
@@ -217,6 +230,12 @@ const { setupViewProps, resultViewProps, noticeModalProps } = usePlannerViewMode
     recentPlanningJobs,
     recentPlanningJobsLoading,
     recentPlanningJobsError,
+    tripVersions,
+    tripVersionsLoading,
+    tripVersionsError,
+    tripVersionsHasMore,
+    restoringTripVersion,
+    savingTripVersionLabel,
     replanningDays,
     expandedDays,
     focusedWorkspaceDays,
@@ -260,6 +279,27 @@ const { notificationEvents, resultViewEvents, setupViewEvents } = usePlannerAppB
   regenerateShareLink: workspaceActions.regenerateShareLink,
   exportCalendarFile: workspaceActions.exportCalendarFile,
   replanUnlockedDays: workspaceActions.replanUnlockedDays,
+  createWorkspaceVersionSnapshot: workspaceActions.createWorkspaceVersionSnapshot,
+  deleteWorkspaceVersion: workspaceActions.deleteWorkspaceVersion,
+  loadTripVersions: workspaceActions.loadTripVersions,
+  currentTripId: () => currentTrip.value?.id,
+  currentTripVersionCount: () => tripVersions.value.length,
+  hasMoreTripVersions: () => tripVersionsHasMore.value,
+  restoreWorkspaceVersion: workspaceActions.restoreWorkspaceVersion,
+  saveWorkspaceVersionLabel: workspaceActions.saveWorkspaceVersionLabel,
+  toggleWorkspaceVersionStar: (version: TripWorkspaceVersionSummary) =>
+    workspaceActions.saveWorkspaceVersionMeta(version.version, {
+      versionLabel: version.version_label,
+      isStarred: !version.is_starred,
+      isArchived: version.is_archived,
+    }),
+  toggleWorkspaceVersionArchive: (version: TripWorkspaceVersionSummary) =>
+    workspaceActions.saveWorkspaceVersionMeta(version.version, {
+      versionLabel: version.version_label,
+      isStarred: version.is_starred,
+      isArchived: !version.is_archived,
+    }),
+  batchUpdateWorkspaceVersions: workspaceActions.batchUpdateWorkspaceVersions,
   focusWorkspaceDays: plannerShell.focusWorkspaceDays,
   clearWorkspaceFocus: plannerShell.clearWorkspaceFocus,
   refreshDeparturePrecheck: workspaceActions.refreshDeparturePrecheck,
@@ -310,6 +350,15 @@ const { notificationEvents, resultViewEvents, setupViewEvents } = usePlannerAppB
           @revoke-share="resultViewEvents['revoke-share']"
           @regenerate-share="resultViewEvents['regenerate-share']"
           @replan-trip="resultViewEvents['replan-trip']"
+          @create-trip-version-snapshot="resultViewEvents['create-trip-version-snapshot']"
+          @delete-trip-version="resultViewEvents['delete-trip-version']"
+          @restore-trip-version="resultViewEvents['restore-trip-version']"
+          @save-trip-version-label="resultViewEvents['save-trip-version-label']"
+          @toggle-trip-version-star="resultViewEvents['toggle-trip-version-star']"
+          @toggle-trip-version-archive="resultViewEvents['toggle-trip-version-archive']"
+          @batch-trip-version-update="resultViewEvents['batch-trip-version-update']"
+          @load-more-trip-versions="resultViewEvents['load-more-trip-versions']"
+          @load-all-trip-versions="resultViewEvents['load-all-trip-versions']"
           @focus-workspace-days="resultViewEvents['focus-workspace-days']"
           @clear-workspace-focus="resultViewEvents['clear-workspace-focus']"
           @refresh-precheck="resultViewEvents['refresh-precheck']"

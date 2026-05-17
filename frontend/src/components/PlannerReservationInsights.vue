@@ -6,6 +6,10 @@ import type {
   ReservationCoverageItem,
   ReservationCoverageSummary,
 } from "../composables/useTripWorkspaceInsights";
+import {
+  formatDayReadinessStatusLabel,
+  resolveDayReadinessStatusClass,
+} from "../utils/dayReadinessStatus";
 
 const props = defineProps<{
   reservationAlerts: string[];
@@ -191,8 +195,11 @@ function conflictKindLabel(kind: "activity" | "meal" | "stay") {
               <div class="font-medium text-ink">第 {{ item.dayNumber }} 天</div>
               <div class="mt-1 text-xs text-slate-500">{{ item.date }}</div>
             </div>
-            <span class="rounded-full px-3 py-1 text-xs" :class="readinessStatusClass(item.status)">
-              {{ readinessStatusLabel(item.status) }}
+            <span
+              class="rounded-full px-3 py-1 text-xs"
+              :class="resolveDayReadinessStatusClass(item.status)"
+            >
+              {{ formatDayReadinessStatusLabel(item.status) }}
             </span>
           </div>
 

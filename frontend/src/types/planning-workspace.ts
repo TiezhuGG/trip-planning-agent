@@ -109,8 +109,10 @@ export type WorkspaceTimelineEventKind =
   | "created"
   | "updated"
   | "generated"
+  | "snapshot"
   | "replanned"
   | "prechecked"
+  | "restored"
   | "share_revoked"
   | "share_regenerated"
 
@@ -143,6 +145,28 @@ export interface TripSummary {
   title: string
 }
 
+export interface TripWorkspaceVersionSummary {
+  trip_id: string
+  version: number
+  status: WorkspaceStatus
+  updated_at: string
+  created_at: string
+  has_result: boolean
+  title: string
+  version_label: string
+  is_starred: boolean
+  is_archived: boolean
+  is_current: boolean
+  version_origin_kind: WorkspaceTimelineEventKind | null
+  restored_from_version: number | null
+}
+
+export interface TripWorkspaceVersionListResponse {
+  items: TripWorkspaceVersionSummary[]
+  total: number
+  has_more: boolean
+}
+
 export interface TripWorkspace {
   id: string
   share_token: string
@@ -153,12 +177,39 @@ export interface TripWorkspace {
   updated_at: string
   request_brief: TripPlanningRequest
   manual_notes: string
+  version_label: string
+  is_starred: boolean
+  is_archived: boolean
+  version_origin_kind: WorkspaceTimelineEventKind | null
+  restored_from_version: number | null
   locked_day_numbers: number[]
   reservations: ReservationItem[]
   last_replan_summary?: ReplanSummary | null
   last_precheck_summary?: PrecheckSummary | null
   timeline: WorkspaceTimelineEvent[]
   response_snapshot: PlanningResponse | null
+}
+
+export interface TripWorkspaceVersion {
+  trip_id: string
+  version: number
+  captured_at: string
+  is_current: boolean
+  workspace: TripWorkspace
+}
+
+export interface TripWorkspaceVersionLabelUpdateRequest {
+  version_label: string
+}
+
+export interface TripWorkspaceVersionCreateRequest {
+  version_label: string
+}
+
+export interface TripWorkspaceVersionMetaUpdateRequest {
+  version_label: string
+  is_starred: boolean
+  is_archived: boolean
 }
 
 export interface TripCreateRequest {

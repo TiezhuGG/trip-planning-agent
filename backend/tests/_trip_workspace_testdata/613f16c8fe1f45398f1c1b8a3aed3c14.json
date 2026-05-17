@@ -1,0 +1,261 @@
+{
+  "workspaces": {
+    "a1493976613b44c2a16191798cc116ae": {
+      "id": "a1493976613b44c2a16191798cc116ae",
+      "share_token": "ag_NpjVHGcUp",
+      "share_enabled": true,
+      "status": "draft",
+      "version": 3,
+      "created_at": "2026-05-03T20:03:04.531586Z",
+      "updated_at": "2026-05-03T20:03:04.540383Z",
+      "request_brief": {
+        "origin": null,
+        "destination": "上海",
+        "start_date": "2026-05-01",
+        "days": 2,
+        "interests": [
+          "自然风光"
+        ],
+        "must_visit": [],
+        "pace": "balanced",
+        "budget_level": "comfort",
+        "transport_preferences": [],
+        "hotel_style": "市中心舒适型",
+        "dining_preferences": [],
+        "travelers": {
+          "adults": 2,
+          "children": 0,
+          "seniors": 0
+        },
+        "notes": null
+      },
+      "manual_notes": "v3",
+      "version_label": "",
+      "is_starred": false,
+      "is_archived": false,
+      "version_origin_kind": "updated",
+      "restored_from_version": null,
+      "locked_day_numbers": [],
+      "reservations": [],
+      "last_replan_summary": null,
+      "last_precheck_summary": null,
+      "timeline": [
+        {
+          "id": "66e7ad290d3240148c53ec4ac130ceb3",
+          "created_at": "2026-05-03T20:03:04.540383Z",
+          "kind": "updated",
+          "title": "已更新工作区",
+          "summary": "已同步备注、锁定日和预约信息；当前共有 0 个锁定日，0 条预约。",
+          "version": 3,
+          "target_days": []
+        },
+        {
+          "id": "f2649a271eee46e1a0b2f97c3bd549f5",
+          "created_at": "2026-05-03T20:03:04.536275Z",
+          "kind": "updated",
+          "title": "已更新工作区",
+          "summary": "已同步备注、锁定日和预约信息；当前共有 0 个锁定日，0 条预约。",
+          "version": 2,
+          "target_days": []
+        },
+        {
+          "id": "d5a9b7c258dd4014aa39a7c939607a4e",
+          "created_at": "2026-05-03T20:03:04.531586Z",
+          "kind": "created",
+          "title": "已保存工作区草稿",
+          "summary": "上海 2 天需求已保存为草稿。",
+          "version": 1,
+          "target_days": []
+        }
+      ],
+      "response_snapshot": null
+    }
+  },
+  "history": {
+    "a1493976613b44c2a16191798cc116ae": {
+      "1": {
+        "id": "a1493976613b44c2a16191798cc116ae",
+        "share_token": "ag_NpjVHGcUp",
+        "share_enabled": true,
+        "status": "draft",
+        "version": 1,
+        "created_at": "2026-05-03T20:03:04.531586Z",
+        "updated_at": "2026-05-03T20:03:04.531586Z",
+        "request_brief": {
+          "origin": null,
+          "destination": "上海",
+          "start_date": "2026-05-01",
+          "days": 2,
+          "interests": [
+            "自然风光"
+          ],
+          "must_visit": [],
+          "pace": "balanced",
+          "budget_level": "comfort",
+          "transport_preferences": [],
+          "hotel_style": "市中心舒适型",
+          "dining_preferences": [],
+          "travelers": {
+            "adults": 2,
+            "children": 0,
+            "seniors": 0
+          },
+          "notes": null
+        },
+        "manual_notes": "v1",
+        "version_label": "",
+        "is_starred": false,
+        "is_archived": false,
+        "version_origin_kind": "created",
+        "restored_from_version": null,
+        "locked_day_numbers": [],
+        "reservations": [],
+        "last_replan_summary": null,
+        "last_precheck_summary": null,
+        "timeline": [
+          {
+            "id": "d5a9b7c258dd4014aa39a7c939607a4e",
+            "created_at": "2026-05-03T20:03:04.531586Z",
+            "kind": "created",
+            "title": "已保存工作区草稿",
+            "summary": "上海 2 天需求已保存为草稿。",
+            "version": 1,
+            "target_days": []
+          }
+        ],
+        "response_snapshot": null
+      },
+      "2": {
+        "id": "a1493976613b44c2a16191798cc116ae",
+        "share_token": "ag_NpjVHGcUp",
+        "share_enabled": true,
+        "status": "draft",
+        "version": 2,
+        "created_at": "2026-05-03T20:03:04.531586Z",
+        "updated_at": "2026-05-03T20:03:04.536275Z",
+        "request_brief": {
+          "origin": null,
+          "destination": "上海",
+          "start_date": "2026-05-01",
+          "days": 2,
+          "interests": [
+            "自然风光"
+          ],
+          "must_visit": [],
+          "pace": "balanced",
+          "budget_level": "comfort",
+          "transport_preferences": [],
+          "hotel_style": "市中心舒适型",
+          "dining_preferences": [],
+          "travelers": {
+            "adults": 2,
+            "children": 0,
+            "seniors": 0
+          },
+          "notes": null
+        },
+        "manual_notes": "v2",
+        "version_label": "",
+        "is_starred": false,
+        "is_archived": false,
+        "version_origin_kind": "updated",
+        "restored_from_version": null,
+        "locked_day_numbers": [],
+        "reservations": [],
+        "last_replan_summary": null,
+        "last_precheck_summary": null,
+        "timeline": [
+          {
+            "id": "f2649a271eee46e1a0b2f97c3bd549f5",
+            "created_at": "2026-05-03T20:03:04.536275Z",
+            "kind": "updated",
+            "title": "已更新工作区",
+            "summary": "已同步备注、锁定日和预约信息；当前共有 0 个锁定日，0 条预约。",
+            "version": 2,
+            "target_days": []
+          },
+          {
+            "id": "d5a9b7c258dd4014aa39a7c939607a4e",
+            "created_at": "2026-05-03T20:03:04.531586Z",
+            "kind": "created",
+            "title": "已保存工作区草稿",
+            "summary": "上海 2 天需求已保存为草稿。",
+            "version": 1,
+            "target_days": []
+          }
+        ],
+        "response_snapshot": null
+      },
+      "3": {
+        "id": "a1493976613b44c2a16191798cc116ae",
+        "share_token": "ag_NpjVHGcUp",
+        "share_enabled": true,
+        "status": "draft",
+        "version": 3,
+        "created_at": "2026-05-03T20:03:04.531586Z",
+        "updated_at": "2026-05-03T20:03:04.540383Z",
+        "request_brief": {
+          "origin": null,
+          "destination": "上海",
+          "start_date": "2026-05-01",
+          "days": 2,
+          "interests": [
+            "自然风光"
+          ],
+          "must_visit": [],
+          "pace": "balanced",
+          "budget_level": "comfort",
+          "transport_preferences": [],
+          "hotel_style": "市中心舒适型",
+          "dining_preferences": [],
+          "travelers": {
+            "adults": 2,
+            "children": 0,
+            "seniors": 0
+          },
+          "notes": null
+        },
+        "manual_notes": "v3",
+        "version_label": "",
+        "is_starred": false,
+        "is_archived": false,
+        "version_origin_kind": "updated",
+        "restored_from_version": null,
+        "locked_day_numbers": [],
+        "reservations": [],
+        "last_replan_summary": null,
+        "last_precheck_summary": null,
+        "timeline": [
+          {
+            "id": "66e7ad290d3240148c53ec4ac130ceb3",
+            "created_at": "2026-05-03T20:03:04.540383Z",
+            "kind": "updated",
+            "title": "已更新工作区",
+            "summary": "已同步备注、锁定日和预约信息；当前共有 0 个锁定日，0 条预约。",
+            "version": 3,
+            "target_days": []
+          },
+          {
+            "id": "f2649a271eee46e1a0b2f97c3bd549f5",
+            "created_at": "2026-05-03T20:03:04.536275Z",
+            "kind": "updated",
+            "title": "已更新工作区",
+            "summary": "已同步备注、锁定日和预约信息；当前共有 0 个锁定日，0 条预约。",
+            "version": 2,
+            "target_days": []
+          },
+          {
+            "id": "d5a9b7c258dd4014aa39a7c939607a4e",
+            "created_at": "2026-05-03T20:03:04.531586Z",
+            "kind": "created",
+            "title": "已保存工作区草稿",
+            "summary": "上海 2 天需求已保存为草稿。",
+            "version": 1,
+            "target_days": []
+          }
+        ],
+        "response_snapshot": null
+      }
+    }
+  }
+}

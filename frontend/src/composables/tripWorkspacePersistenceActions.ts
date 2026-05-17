@@ -1,18 +1,25 @@
 import { onScopeDispose, type Ref } from "vue";
 
 import {
+  createTripWorkspaceVersionSnapshot,
   createTripWorkspace,
+  deleteTripWorkspaceVersion,
   downloadTripWorkspaceCalendar,
   getPlanningJob,
   getTripWorkspace,
+  getTripWorkspaceVersion,
   getTripWorkspaceByShareToken,
   listPlanningJobs,
   listRecentTripWorkspaces,
+  listTripWorkspaceVersions,
   patchTripWorkspace,
+  restoreTripWorkspaceVersion,
   regenerateTripWorkspaceShare,
   revokeTripWorkspaceShare,
   startTripWorkspacePrecheckJob,
   startUpdateTripWorkspaceJob,
+  updateTripWorkspaceVersionLabel,
+  updateTripWorkspaceVersionMeta,
 } from "../api/planning";
 import type {
   CalendarExportScope,
@@ -22,6 +29,7 @@ import type {
   TripPlanningRequest,
   TripSummary,
   TripWorkspace,
+  TripWorkspaceVersionSummary,
 } from "../types/planning";
 import {
   humanizePlanningJobProgress,
@@ -49,6 +57,8 @@ type WorkspacePatch = {
   generate_response?: boolean;
 };
 
+type BatchVersionAction = "star" | "unstar" | "archive" | "unarchive";
+
 export function createTripWorkspacePersistenceActions(options: {
   currentTrip: Ref<TripWorkspace | null>;
   tripNotes: Ref<string>;
@@ -60,6 +70,12 @@ export function createTripWorkspacePersistenceActions(options: {
   recentPlanningJobs: Ref<PlanningJobSummary[]>;
   recentPlanningJobsLoading: Ref<boolean>;
   recentPlanningJobsError: Ref<string>;
+  tripVersions: Ref<TripWorkspaceVersionSummary[]>;
+  tripVersionsLoading: Ref<boolean>;
+  tripVersionsError: Ref<string>;
+  tripVersionsHasMore: Ref<boolean>;
+  restoringTripVersion: Ref<number | null>;
+  savingTripVersionLabel: Ref<number | null>;
   recentTrips: Ref<TripSummary[]>;
   recentTripsLoading: Ref<boolean>;
   recentTripsError: Ref<string>;
@@ -88,6 +104,12 @@ export function createTripWorkspacePersistenceActions(options: {
     recentPlanningJobs,
     recentPlanningJobsLoading,
     recentPlanningJobsError,
+    tripVersions,
+    tripVersionsLoading,
+    tripVersionsError,
+    tripVersionsHasMore,
+    restoringTripVersion,
+    savingTripVersionLabel,
     recentTrips,
     recentTripsLoading,
     recentTripsError,
@@ -247,6 +269,7 @@ export function createTripWorkspacePersistenceActions(options: {
       const workspace = await getTripWorkspaceByShareToken(shareToken);
       applyWorkspace(workspace);
       void loadRecentPlanningJobs(workspace.id);
+      void loadTripVersions(workspace.id);
       openNotice("success", "已加载分享行程", [
         workspace.response_snapshot
           ? "当前页面已切换到分享工作区，你可以继续查看、锁定日期或重新规划。"
@@ -267,6 +290,7 @@ export function createTripWorkspacePersistenceActions(options: {
       const workspace = await getTripWorkspace(tripId);
       applyWorkspace(workspace, { syncUrl: false });
       void loadRecentPlanningJobs(workspace.id);
+      void loadTripVersions(workspace.id);
       openNotice("success", "已恢复最近工作区", [
         workspace.response_snapshot
           ? "已恢复到最近一次保存的行程工作区，你可以继续编辑、预检或重新规划。"
@@ -314,6 +338,50 @@ export function createTripWorkspacePersistenceActions(options: {
     }
   }
 
+  async function loadTripVersions(
+    tripId?: string,
+    limit = 12,
+    options: { offset?: number; append?: boolean } = {},
+  ) {
+    if (!tripId) {
+      if (!options.append) {
+        tripVersions.value = [];
+      }
+      tripVersionsError.value = "";
+      tripVersionsHasMore.value = false;
+      return;
+    }
+    tripVersionsLoading.value = true;
+    tripVersionsError.value = "";
+    try {
+      const response = await listTripWorkspaceVersions(tripId, {
+        limit,
+        offset: options.offset ?? 0,
+      });
+      const nextVersions = response.items;
+      if (options.append) {
+        const merged = [...tripVersions.value];
+        for (const version of nextVersions) {
+          if (!merged.some((item) => item.version === version.version)) {
+            merged.push(version);
+          }
+        }
+        tripVersions.value = merged;
+      } else {
+        tripVersions.value = nextVersions;
+      }
+      tripVersionsHasMore.value = response.has_more;
+    } catch (error) {
+      tripVersionsError.value = toActionErrorMessage(error, "读取版本历史失败");
+      if (!options.append) {
+        tripVersions.value = [];
+      }
+      tripVersionsHasMore.value = false;
+    } finally {
+      tripVersionsLoading.value = false;
+    }
+  }
+
   async function persistWorkspaceFromResponse(response: PlanningResponse) {
     tripSaving.value = true;
     busyMessage.value = "正在保存生成结果到工作区。";
@@ -331,6 +399,7 @@ export function createTripWorkspacePersistenceActions(options: {
       applyWorkspace(workspace);
       void loadRecentTrips();
       void loadRecentPlanningJobs(workspace.id);
+      void loadTripVersions(workspace.id);
       queueAutoDeparturePrecheck(workspace);
     } catch (error) {
       const message = toActionErrorMessage(error, "保存行程工作区失败，请稍后重试。");
@@ -391,6 +460,7 @@ export function createTripWorkspacePersistenceActions(options: {
       });
       void loadRecentTrips();
       void loadRecentPlanningJobs(nextWorkspace.id);
+      void loadTripVersions(nextWorkspace.id);
       if (patch.generate_response || reservationsChanged(workspace.reservations, nextWorkspace.reservations)) {
         queueAutoDeparturePrecheck(nextWorkspace);
       }
@@ -447,6 +517,7 @@ export function createTripWorkspacePersistenceActions(options: {
         applyWorkspace(workspace, { syncUrl: false });
         void loadRecentTrips();
         void loadRecentPlanningJobs(workspace.id);
+        void loadTripVersions(workspace.id);
       } else {
         const workspace = await createTripWorkspace(
           buildPersistedWorkspacePayload({
@@ -460,6 +531,7 @@ export function createTripWorkspacePersistenceActions(options: {
         applyWorkspace(workspace);
         void loadRecentTrips();
         void loadRecentPlanningJobs(workspace.id);
+        void loadTripVersions(workspace.id);
       }
       openNotice("success", "草稿已保存", [
         "当前需求已写入工作区，稍后可以继续生成或修改。",
@@ -502,6 +574,7 @@ export function createTripWorkspacePersistenceActions(options: {
       applyWorkspace(nextWorkspace);
       void loadRecentTrips();
       void loadRecentPlanningJobs(nextWorkspace.id);
+      void loadTripVersions(nextWorkspace.id);
       openNotice("success", "分享链接已撤销", [
         "旧分享链接已经失效，外部访问将被阻止。",
       ]);
@@ -531,6 +604,7 @@ export function createTripWorkspacePersistenceActions(options: {
       applyWorkspace(nextWorkspace);
       void loadRecentTrips();
       void loadRecentPlanningJobs(nextWorkspace.id);
+      void loadTripVersions(nextWorkspace.id);
       openNotice("success", "新的分享链接已生成", [
         "旧链接已经失效，你可以复制新的分享地址发给他人。",
       ]);
@@ -576,6 +650,7 @@ export function createTripWorkspacePersistenceActions(options: {
       });
       void loadRecentTrips();
       void loadRecentPlanningJobs(nextWorkspace.id);
+      void loadTripVersions(nextWorkspace.id);
       openNotice("success", "出发前预检已刷新", buildPrecheckRefreshMessages(nextWorkspace));
     } catch (error) {
       const message = toActionErrorMessage(error, "刷新出发前预检失败，请稍后重试。");
@@ -614,17 +689,364 @@ export function createTripWorkspacePersistenceActions(options: {
     }
   }
 
+  async function previewTripVersion(version: number) {
+    const workspace = ensureCurrentWorkspace(
+      currentTrip,
+      openNotice,
+      "请先保存工作区后再查看历史版本。",
+    );
+    if (!workspace) {
+      return null;
+    }
+    try {
+      return await getTripWorkspaceVersion(workspace.id, version);
+    } catch (error) {
+      const message = toActionErrorMessage(error, "读取历史版本失败，请稍后重试。");
+      openNotice("error", "读取历史版本失败", [message]);
+      return null;
+    }
+  }
+
+  async function restoreWorkspaceVersion(version: number) {
+    const workspace = ensureCurrentWorkspace(
+      currentTrip,
+      openNotice,
+      "请先保存工作区后再恢复历史版本。",
+    );
+    if (!workspace) {
+      return;
+    }
+
+    restoringTripVersion.value = version;
+    busyMessage.value = `正在恢复 v${version}...`;
+    try {
+      const nextWorkspace = await restoreTripWorkspaceVersion(workspace.id, version);
+      applyWorkspace(nextWorkspace, { syncUrl: false });
+      void loadRecentTrips();
+      void loadRecentPlanningJobs(nextWorkspace.id);
+      void loadTripVersions(nextWorkspace.id);
+      openNotice("success", "已恢复历史版本", [
+        `工作区已恢复到 v${version} 的内容，并生成新的当前版本 v${nextWorkspace.version}。`,
+      ]);
+    } catch (error) {
+      const message = toActionErrorMessage(error, "恢复历史版本失败，请稍后重试。");
+      openNotice("error", "恢复历史版本失败", [message]);
+    } finally {
+      restoringTripVersion.value = null;
+      busyMessage.value = "";
+    }
+  }
+
+  async function createWorkspaceVersionSnapshot(versionLabel: string) {
+    const workspace = ensureCurrentWorkspace(
+      currentTrip,
+      openNotice,
+      "请先保存工作区后再创建版本快照。",
+    );
+    if (!workspace) {
+      return;
+    }
+
+    savingTripVersionLabel.value = workspace.version;
+    busyMessage.value = "正在保存当前版本快照。";
+    try {
+      const nextWorkspace = await createTripWorkspaceVersionSnapshot(workspace.id, {
+        version_label: versionLabel,
+      });
+      applyWorkspace(nextWorkspace, { syncUrl: false });
+      void loadRecentTrips();
+      void loadRecentPlanningJobs(nextWorkspace.id);
+      void loadTripVersions(nextWorkspace.id);
+      openNotice("success", "已创建版本快照", [
+        versionLabel.trim()
+          ? `当前工作区已另存为 v${nextWorkspace.version}，标签为“${versionLabel.trim()}”。`
+          : `当前工作区已另存为 v${nextWorkspace.version}。`,
+      ]);
+    } catch (error) {
+      const message = toActionErrorMessage(error, "创建版本快照失败，请稍后重试。");
+      openNotice("error", "创建版本快照失败", [message]);
+    } finally {
+      savingTripVersionLabel.value = null;
+      busyMessage.value = "";
+    }
+  }
+
+  async function deleteWorkspaceVersion(version: number) {
+    const workspace = ensureCurrentWorkspace(
+      currentTrip,
+      openNotice,
+      "请先保存工作区后再删除版本快照。",
+    );
+    if (!workspace) {
+      return;
+    }
+
+    savingTripVersionLabel.value = version;
+    busyMessage.value = `正在删除 v${version} 快照。`;
+    try {
+      await deleteTripWorkspaceVersion(workspace.id, version);
+      void loadTripVersions(workspace.id);
+      void loadRecentTrips();
+      openNotice("success", "版本快照已删除", [
+        `v${version} 已从版本历史中移除。`,
+      ]);
+    } catch (error) {
+      const message = toActionErrorMessage(error, "删除版本快照失败，请稍后重试。");
+      openNotice("error", "删除版本快照失败", [message]);
+    } finally {
+      savingTripVersionLabel.value = null;
+      busyMessage.value = "";
+    }
+  }
+
+  async function saveWorkspaceVersionLabel(version: number, versionLabel: string) {
+    const workspace = ensureCurrentWorkspace(
+      currentTrip,
+      openNotice,
+      "请先保存工作区后再更新版本标签。",
+    );
+    if (!workspace) {
+      return;
+    }
+
+    savingTripVersionLabel.value = version;
+    try {
+      const nextWorkspace = await updateTripWorkspaceVersionLabel(workspace.id, version, {
+        version_label: versionLabel,
+      });
+      if (nextWorkspace.version === currentTrip.value?.version) {
+        applyWorkspace(nextWorkspace, { syncUrl: false });
+      }
+      void loadTripVersions(workspace.id);
+      void loadRecentTrips();
+      openNotice("success", "版本标签已更新", [
+        versionLabel.trim()
+          ? `v${version} 已命名为“${versionLabel.trim()}”。`
+          : `v${version} 的自定义标签已清空。`,
+      ]);
+    } catch (error) {
+      const message = toActionErrorMessage(error, "更新版本标签失败，请稍后重试。");
+      openNotice("error", "版本标签更新失败", [message]);
+    } finally {
+      savingTripVersionLabel.value = null;
+    }
+  }
+
+  async function saveWorkspaceVersionMeta(
+    version: number,
+    options: { versionLabel: string; isStarred: boolean; isArchived: boolean },
+  ) {
+    const workspace = ensureCurrentWorkspace(
+      currentTrip,
+      openNotice,
+      "请先保存工作区后再更新版本元数据。",
+    );
+    if (!workspace) {
+      return;
+    }
+
+    savingTripVersionLabel.value = version;
+    try {
+      const nextWorkspace = await updateTripWorkspaceVersionMeta(workspace.id, version, {
+        version_label: options.versionLabel,
+        is_starred: options.isStarred,
+        is_archived: options.isArchived,
+      });
+      if (nextWorkspace.version === currentTrip.value?.version) {
+        applyWorkspace(nextWorkspace, { syncUrl: false });
+      }
+      void loadTripVersions(workspace.id);
+      void loadRecentTrips();
+    } catch (error) {
+      const message = toActionErrorMessage(error, "更新版本元数据失败，请稍后重试。");
+      openNotice("error", "版本更新失败", [message]);
+    } finally {
+      savingTripVersionLabel.value = null;
+    }
+  }
+
+  async function batchUpdateWorkspaceVersions(
+    versions: TripWorkspaceVersionSummary[],
+    action: BatchVersionAction,
+  ) {
+    const workspace = ensureCurrentWorkspace(
+      currentTrip,
+      openNotice,
+      "请先保存工作区后再批量更新版本。",
+    );
+    if (!workspace || !versions.length) {
+      return;
+    }
+
+    const uniqueVersions = versions
+      .filter((item, index, source) => source.findIndex((entry) => entry.version === item.version) === index)
+      .filter((item) => !item.is_current);
+
+    if (!uniqueVersions.length) {
+      return;
+    }
+
+    const actionLabel =
+      action === "star"
+        ? "批量标星"
+        : action === "unstar"
+          ? "批量取消星标"
+          : action === "archive"
+            ? "批量归档"
+            : "批量取消归档";
+
+    busyMessage.value = `正在${actionLabel}...`;
+
+    try {
+      for (const version of uniqueVersions) {
+        savingTripVersionLabel.value = version.version;
+        const nextWorkspace = await updateTripWorkspaceVersionMeta(workspace.id, version.version, {
+          version_label: version.version_label,
+          is_starred: action === "star" ? true : action === "unstar" ? false : version.is_starred,
+          is_archived: action === "archive" ? true : action === "unarchive" ? false : version.is_archived,
+        });
+        if (nextWorkspace.version === currentTrip.value?.version) {
+          applyWorkspace(nextWorkspace, { syncUrl: false });
+        }
+      }
+
+      void loadTripVersions(workspace.id);
+      void loadRecentTrips();
+      openNotice("success", `${actionLabel}完成`, [`已处理 ${uniqueVersions.length} 个版本。`]);
+    } catch (error) {
+      const message = toActionErrorMessage(error, `${actionLabel}失败，请稍后重试。`);
+      openNotice("error", `${actionLabel}失败`, [message]);
+    } finally {
+      savingTripVersionLabel.value = null;
+      busyMessage.value = "";
+    }
+  }
+
+  async function batchUpdateWorkspaceVersionsV2(
+    versions: TripWorkspaceVersionSummary[],
+    action: BatchVersionAction,
+  ) {
+    const workspace = ensureCurrentWorkspace(
+      currentTrip,
+      openNotice,
+      "请先保存工作区后再批量更新版本。",
+    );
+    if (!workspace || !versions.length) {
+      return;
+    }
+
+    const uniqueVersions = versions
+      .filter(
+        (item, index, source) =>
+          source.findIndex((entry) => entry.version === item.version) === index,
+      )
+      .filter((item) => !item.is_current);
+
+    if (!uniqueVersions.length) {
+      return;
+    }
+
+    const actionLabel =
+      action === "star"
+        ? "批量标星"
+        : action === "unstar"
+          ? "批量取消星标"
+          : action === "archive"
+            ? "批量归档"
+            : "批量取消归档";
+
+    busyMessage.value = `正在${actionLabel}...`;
+
+    const updatedVersions: number[] = [];
+    const skippedVersions: number[] = [];
+    const failedVersions: Array<{ version: number; message: string }> = [];
+
+    try {
+      for (const version of uniqueVersions) {
+        const nextStarred =
+          action === "star" ? true : action === "unstar" ? false : version.is_starred;
+        const nextArchived =
+          action === "archive" ? true : action === "unarchive" ? false : version.is_archived;
+
+        if (nextStarred === version.is_starred && nextArchived === version.is_archived) {
+          skippedVersions.push(version.version);
+          continue;
+        }
+
+        savingTripVersionLabel.value = version.version;
+        try {
+          const nextWorkspace = await updateTripWorkspaceVersionMeta(
+            workspace.id,
+            version.version,
+            {
+              version_label: version.version_label,
+              is_starred: nextStarred,
+              is_archived: nextArchived,
+            },
+          );
+          if (nextWorkspace.version === currentTrip.value?.version) {
+            applyWorkspace(nextWorkspace, { syncUrl: false });
+          }
+          updatedVersions.push(version.version);
+        } catch (error) {
+          failedVersions.push({
+            version: version.version,
+            message: toActionErrorMessage(error, `v${version.version} 处理失败`),
+          });
+        }
+      }
+
+      void loadTripVersions(workspace.id);
+      void loadRecentTrips();
+
+      const summaryMessages: string[] = [];
+      if (updatedVersions.length) {
+        summaryMessages.push(
+          `已成功 ${updatedVersions.length} 个版本：${updatedVersions.map((item) => `v${item}`).join("、")}。`,
+        );
+      }
+      if (skippedVersions.length) {
+        summaryMessages.push(`已跳过 ${skippedVersions.length} 个版本（状态无变化）。`);
+      }
+      if (failedVersions.length) {
+        summaryMessages.push(
+          `失败 ${failedVersions.length} 个版本：${failedVersions.map((item) => `v${item.version}`).join("、")}。`,
+        );
+        summaryMessages.push(
+          ...failedVersions.slice(0, 3).map((item) => `v${item.version}：${item.message}`),
+        );
+      }
+
+      openNotice(
+        failedVersions.length ? (updatedVersions.length ? "warning" : "error") : "success",
+        failedVersions.length ? `${actionLabel}已完成（含部分结果）` : `${actionLabel}完成`,
+        summaryMessages.length ? summaryMessages : ["没有需要更新的版本。"],
+      );
+    } finally {
+      savingTripVersionLabel.value = null;
+      busyMessage.value = "";
+    }
+  }
+
   return {
     copyShareLink,
     exportCalendarFile: exportCalendarFileWithPrecheckNotice,
     queueAutoDeparturePrecheck,
     loadRecentPlanningJobs,
     loadRecentTrips,
+    loadTripVersions,
     loadSharedTrip,
     loadWorkspaceById,
     persistWorkspaceFromResponse,
+    previewTripVersion,
+    createWorkspaceVersionSnapshot,
+    deleteWorkspaceVersion,
+    batchUpdateWorkspaceVersions: batchUpdateWorkspaceVersionsV2,
     refreshDeparturePrecheck,
     regenerateShareLink,
+    restoreWorkspaceVersion,
+    saveWorkspaceVersionLabel,
+    saveWorkspaceVersionMeta,
     revokeShareLink,
     saveDraft,
     saveTripNotesAndLocks,

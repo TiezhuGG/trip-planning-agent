@@ -30,6 +30,7 @@ from app.schemas.planning import (
     TripCreateRequest,
     TripPlanningRequest,
     TripWorkspacePatchRequest,
+    TripWorkspaceVersionCreateRequest,
     TravelPlan,
     WeatherSummary,
 )
@@ -2694,4 +2695,432 @@ def test_trip_workspace_replan_replaces_only_target_day() -> None:
     assert replanned.response_snapshot.plan.days[0].theme == "第1天-old"
     assert replanned.response_snapshot.plan.days[1].theme == "第2天-new"
     assert any("第 2 天" in item for item in replanned.response_snapshot.meta.warnings)
+    store_path.unlink(missing_ok=True)
+def test_trip_workspace_versions_are_listed_after_updates() -> None:
+    store_path = _make_store_path()
+    settings = Settings(
+        planner_trip_store_path=str(store_path),
+        planner_generate_cache_enabled=False,
+    )
+    planner = TravelPlannerService(settings)
+    service = TripWorkspaceService(settings, planner)
+    request = _build_request()
+
+    created = asyncio.run(
+        service.create_trip(
+            TripCreateRequest(
+                request_brief=request,
+                manual_notes="v1",
+            )
+        )
+    )
+    updated = asyncio.run(
+        service.update_trip(
+            created.id,
+            TripWorkspacePatchRequest(
+                manual_notes="v2",
+            ),
+        )
+    )
+
+    versions = asyncio.run(service.list_trip_versions(created.id, limit=10))
+
+    assert updated.version == 2
+    assert versions.total >= 2
+    assert versions.has_more is False
+    assert len(versions.items) >= 2
+    assert versions.items[0].version == 2
+    assert versions.items[0].is_current is True
+    assert any(item.version == 1 for item in versions.items)
+    store_path.unlink(missing_ok=True)
+
+
+def test_trip_workspace_versions_report_precise_has_more_and_total() -> None:
+    store_path = _make_store_path()
+    settings = Settings(
+        planner_trip_store_path=str(store_path),
+        planner_generate_cache_enabled=False,
+    )
+    planner = TravelPlannerService(settings)
+    service = TripWorkspaceService(settings, planner)
+    request = _build_request()
+
+    created = asyncio.run(
+        service.create_trip(
+            TripCreateRequest(
+                request_brief=request,
+                manual_notes="v1",
+            )
+        )
+    )
+    _ = asyncio.run(
+        service.update_trip(
+            created.id,
+            TripWorkspacePatchRequest(manual_notes="v2"),
+        )
+    )
+    _ = asyncio.run(
+        service.update_trip(
+            created.id,
+            TripWorkspacePatchRequest(manual_notes="v3"),
+        )
+    )
+
+    first_page = asyncio.run(service.list_trip_versions(created.id, limit=2, offset=0))
+    second_page = asyncio.run(service.list_trip_versions(created.id, limit=2, offset=2))
+
+    assert first_page.total == 3
+    assert first_page.has_more is True
+    assert [item.version for item in first_page.items] == [3, 2]
+    assert second_page.total == 3
+    assert second_page.has_more is False
+    assert [item.version for item in second_page.items] == [1]
+    store_path.unlink(missing_ok=True)
+
+
+def test_trip_workspace_restore_version_creates_new_current_version() -> None:
+    store_path = _make_store_path()
+    settings = Settings(
+        planner_trip_store_path=str(store_path),
+        planner_generate_cache_enabled=False,
+    )
+    planner = TravelPlannerService(settings)
+    service = TripWorkspaceService(settings, planner)
+    request = _build_request()
+
+    created = asyncio.run(
+        service.create_trip(
+            TripCreateRequest(
+                request_brief=request,
+                manual_notes="v1",
+            )
+        )
+    )
+    updated = asyncio.run(
+        service.update_trip(
+            created.id,
+            TripWorkspacePatchRequest(
+                manual_notes="v2",
+            ),
+        )
+    )
+
+    restored = asyncio.run(service.restore_trip_version(created.id, 1))
+    snapshot = asyncio.run(service.get_trip_version(created.id, 1))
+
+    assert updated.version == 2
+    assert restored.version == 3
+    assert restored.id == created.id
+    assert restored.share_token == created.share_token
+    assert restored.manual_notes == "v1"
+    assert restored.version_origin_kind == "restored"
+    assert restored.restored_from_version == 1
+    assert restored.timeline[0].kind == "restored"
+    assert snapshot.version == 1
+    assert snapshot.is_current is False
+    store_path.unlink(missing_ok=True)
+
+
+def test_trip_workspace_versions_include_restore_source_marker() -> None:
+    store_path = _make_store_path()
+    settings = Settings(
+        planner_trip_store_path=str(store_path),
+        planner_generate_cache_enabled=False,
+    )
+    planner = TravelPlannerService(settings)
+    service = TripWorkspaceService(settings, planner)
+    request = _build_request()
+
+    created = asyncio.run(
+        service.create_trip(
+            TripCreateRequest(
+                request_brief=request,
+                manual_notes="v1",
+            )
+        )
+    )
+    _ = asyncio.run(
+        service.update_trip(
+            created.id,
+            TripWorkspacePatchRequest(
+                manual_notes="v2",
+            ),
+        )
+    )
+    restored = asyncio.run(service.restore_trip_version(created.id, 1))
+
+    versions = asyncio.run(service.list_trip_versions(created.id, limit=10))
+
+    current = next(item for item in versions.items if item.version == restored.version)
+    original = next(item for item in versions.items if item.version == 1)
+    assert current.version_origin_kind == "restored"
+    assert current.restored_from_version == 1
+    assert original.version_origin_kind == "created"
+    assert original.restored_from_version is None
+    store_path.unlink(missing_ok=True)
+
+
+def test_trip_workspace_version_label_updates_snapshot_and_current_when_needed() -> None:
+    store_path = _make_store_path()
+    settings = Settings(
+        planner_trip_store_path=str(store_path),
+        planner_generate_cache_enabled=False,
+    )
+    planner = TravelPlannerService(settings)
+    service = TripWorkspaceService(settings, planner)
+    request = _build_request()
+
+    created = asyncio.run(
+        service.create_trip(
+            TripCreateRequest(
+                request_brief=request,
+                manual_notes="v1",
+            )
+        )
+    )
+    updated = asyncio.run(
+        service.update_trip(
+            created.id,
+            TripWorkspacePatchRequest(
+                manual_notes="v2",
+            ),
+        )
+    )
+
+    unchanged_current = asyncio.run(
+        service.update_trip_version_label(created.id, 1, "初版锁定")
+    )
+    labeled_v1 = asyncio.run(service.get_trip_version(created.id, 1))
+    labeled_current = asyncio.run(
+        service.update_trip_version_label(created.id, updated.version, "当前候选版")
+    )
+
+    assert unchanged_current.version == updated.version
+    assert unchanged_current.version_label == ""
+    assert labeled_v1.workspace.version_label == "初版锁定"
+    assert labeled_current.version_label == "当前候选版"
+    store_path.unlink(missing_ok=True)
+
+
+def test_trip_workspace_version_meta_can_toggle_star_without_overwriting_current() -> None:
+    store_path = _make_store_path()
+    settings = Settings(
+        planner_trip_store_path=str(store_path),
+        planner_generate_cache_enabled=False,
+    )
+    planner = TravelPlannerService(settings)
+    service = TripWorkspaceService(settings, planner)
+    request = _build_request()
+
+    created = asyncio.run(
+        service.create_trip(
+            TripCreateRequest(
+                request_brief=request,
+                manual_notes="v1",
+            )
+        )
+    )
+    _ = asyncio.run(
+        service.update_trip(
+            created.id,
+            TripWorkspacePatchRequest(
+                manual_notes="v2",
+            ),
+        )
+    )
+
+    unchanged_current = asyncio.run(
+        service.update_trip_version_meta(
+            created.id,
+            1,
+            version_label="收藏初版",
+            is_starred=True,
+            is_archived=False,
+        )
+    )
+    starred_v1 = asyncio.run(service.get_trip_version(created.id, 1))
+
+    assert unchanged_current.version == 2
+    assert unchanged_current.is_starred is False
+    assert starred_v1.workspace.is_starred is True
+    assert starred_v1.workspace.version_label == "收藏初版"
+    store_path.unlink(missing_ok=True)
+
+
+def test_trip_workspace_version_meta_can_archive_snapshot_without_overwriting_current() -> None:
+    store_path = _make_store_path()
+    settings = Settings(
+        planner_trip_store_path=str(store_path),
+        planner_generate_cache_enabled=False,
+    )
+    planner = TravelPlannerService(settings)
+    service = TripWorkspaceService(settings, planner)
+    request = _build_request()
+
+    created = asyncio.run(
+        service.create_trip(
+            TripCreateRequest(
+                request_brief=request,
+                manual_notes="v1",
+            )
+        )
+    )
+    _ = asyncio.run(
+        service.update_trip(
+            created.id,
+            TripWorkspacePatchRequest(
+                manual_notes="v2",
+            ),
+        )
+    )
+
+    unchanged_current = asyncio.run(
+        service.update_trip_version_meta(
+            created.id,
+            1,
+            version_label="已归档初版",
+            is_starred=False,
+            is_archived=True,
+        )
+    )
+    archived_v1 = asyncio.run(service.get_trip_version(created.id, 1))
+
+    assert unchanged_current.version == 2
+    assert unchanged_current.is_archived is False
+    assert archived_v1.workspace.is_archived is True
+    assert archived_v1.workspace.version_label == "已归档初版"
+    store_path.unlink(missing_ok=True)
+
+
+def test_trip_workspace_manual_snapshot_creates_new_current_version() -> None:
+    store_path = _make_store_path()
+    settings = Settings(
+        planner_trip_store_path=str(store_path),
+        planner_generate_cache_enabled=False,
+    )
+    planner = TravelPlannerService(settings)
+    service = TripWorkspaceService(settings, planner)
+    request = _build_request()
+    response = _build_response(
+        request=request,
+        generated_at=datetime.now(UTC),
+        suffix="snapshot",
+    )
+
+    created = asyncio.run(
+        service.create_trip(
+            TripCreateRequest(
+                request_brief=request,
+                response_snapshot=response,
+                manual_notes="snapshot source",
+            )
+        )
+    )
+
+    snapshotted = asyncio.run(
+        service.create_trip_version_snapshot(
+            created.id,
+            payload=TripWorkspaceVersionCreateRequest(version_label="出发前确认版"),
+        )
+    )
+    versions = asyncio.run(service.list_trip_versions(created.id, limit=10))
+
+    assert snapshotted.version == created.version + 1
+    assert snapshotted.version_label == "出发前确认版"
+    assert snapshotted.version_origin_kind == "snapshot"
+    assert snapshotted.restored_from_version is None
+    assert snapshotted.manual_notes == "snapshot source"
+    assert snapshotted.timeline[0].kind == "snapshot"
+    assert versions.total >= 2
+    assert versions.items[0].version == snapshotted.version
+    assert versions.items[0].version_origin_kind == "snapshot"
+    assert versions.items[0].version_label == "出发前确认版"
+    store_path.unlink(missing_ok=True)
+
+
+def test_trip_workspace_delete_manual_snapshot_removes_only_target_version() -> None:
+    store_path = _make_store_path()
+    settings = Settings(
+        planner_trip_store_path=str(store_path),
+        planner_generate_cache_enabled=False,
+    )
+    planner = TravelPlannerService(settings)
+    service = TripWorkspaceService(settings, planner)
+    request = _build_request()
+
+    created = asyncio.run(
+        service.create_trip(
+            TripCreateRequest(
+                request_brief=request,
+                manual_notes="v1",
+            )
+        )
+    )
+    snapshotted = asyncio.run(
+        service.create_trip_version_snapshot(
+            created.id,
+            payload=TripWorkspaceVersionCreateRequest(version_label="可删除快照"),
+        )
+    )
+    current = asyncio.run(
+        service.update_trip(
+            created.id,
+            TripWorkspacePatchRequest(
+                manual_notes="v3",
+            ),
+        )
+    )
+
+    asyncio.run(service.delete_trip_version(created.id, snapshotted.version))
+    versions = asyncio.run(service.list_trip_versions(created.id, limit=10))
+
+    assert current.version > snapshotted.version
+    assert all(item.version != snapshotted.version for item in versions.items)
+    assert any(item.version == created.version for item in versions.items)
+    store_path.unlink(missing_ok=True)
+
+
+def test_trip_workspace_delete_current_or_non_snapshot_version_rejected() -> None:
+    store_path = _make_store_path()
+    settings = Settings(
+        planner_trip_store_path=str(store_path),
+        planner_generate_cache_enabled=False,
+    )
+    planner = TravelPlannerService(settings)
+    service = TripWorkspaceService(settings, planner)
+    request = _build_request()
+
+    created = asyncio.run(
+        service.create_trip(
+            TripCreateRequest(
+                request_brief=request,
+                manual_notes="v1",
+            )
+        )
+    )
+
+    try:
+        asyncio.run(service.delete_trip_version(created.id, created.version))
+    except ValueError as exc:
+        assert "当前版本不能删除" in str(exc)
+    else:
+        raise AssertionError("expected deleting current version to fail")
+
+    updated = asyncio.run(
+        service.update_trip(
+            created.id,
+            TripWorkspacePatchRequest(
+                manual_notes="v2",
+            ),
+        )
+    )
+
+    try:
+        asyncio.run(service.delete_trip_version(created.id, 1))
+    except ValueError as exc:
+        assert "仅支持删除手动保存的版本快照" in str(exc)
+    else:
+        raise AssertionError("expected deleting non-snapshot version to fail")
+
+    assert updated.version == 2
     store_path.unlink(missing_ok=True)

@@ -5,6 +5,7 @@ import type {
   TripSummary,
   TripPlanningRequest,
   TripWorkspace,
+  TripWorkspaceVersionSummary,
 } from "../types/planning";
 import {
   toActionErrorMessage,
@@ -27,6 +28,12 @@ export function useTripWorkspaceActions(options: {
   recentPlanningJobs: Ref<PlanningJobSummary[]>;
   recentPlanningJobsLoading: Ref<boolean>;
   recentPlanningJobsError: Ref<string>;
+  tripVersions: Ref<TripWorkspaceVersionSummary[]>;
+  tripVersionsLoading: Ref<boolean>;
+  tripVersionsError: Ref<string>;
+  tripVersionsHasMore: Ref<boolean>;
+  restoringTripVersion: Ref<number | null>;
+  savingTripVersionLabel: Ref<number | null>;
   recentTrips: Ref<TripSummary[]>;
   recentTripsLoading: Ref<boolean>;
   recentTripsError: Ref<string>;
@@ -58,6 +65,12 @@ export function useTripWorkspaceActions(options: {
     recentPlanningJobs,
     recentPlanningJobsLoading,
     recentPlanningJobsError,
+    tripVersions,
+    tripVersionsLoading,
+    tripVersionsError,
+    tripVersionsHasMore,
+    restoringTripVersion,
+    savingTripVersionLabel,
     recentTrips,
     recentTripsLoading,
     recentTripsError,
@@ -85,6 +98,12 @@ export function useTripWorkspaceActions(options: {
     recentPlanningJobs,
     recentPlanningJobsLoading,
     recentPlanningJobsError,
+    tripVersions,
+    tripVersionsLoading,
+    tripVersionsError,
+    tripVersionsHasMore,
+    restoringTripVersion,
+    savingTripVersionLabel,
     recentTrips,
     recentTripsLoading,
     recentTripsError,

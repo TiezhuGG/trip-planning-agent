@@ -418,8 +418,10 @@ class WorkspaceTimelineEvent(BaseModel):
         "created",
         "updated",
         "generated",
+        "snapshot",
         "replanned",
         "prechecked",
+        "restored",
         "share_revoked",
         "share_regenerated",
     ]
@@ -444,6 +446,38 @@ class TripSummary(BaseModel):
     locked_day_count: int = 0
     has_result: bool = False
     title: str = ""
+
+
+class TripWorkspaceVersionSummary(BaseModel):
+    trip_id: str
+    version: int = Field(default=1, ge=1)
+    status: Literal["draft", "ready", "action_required", "generating", "error"] = "ready"
+    updated_at: datetime
+    created_at: datetime
+    has_result: bool = False
+    title: str = ""
+    version_label: str = ""
+    is_starred: bool = False
+    is_archived: bool = False
+    is_current: bool = False
+    version_origin_kind: Literal[
+        "created",
+        "updated",
+        "generated",
+        "snapshot",
+        "replanned",
+        "prechecked",
+        "restored",
+        "share_revoked",
+        "share_regenerated",
+    ] | None = None
+    restored_from_version: int | None = Field(default=None, ge=1)
+
+
+class TripWorkspaceVersionListResponse(BaseModel):
+    items: list[TripWorkspaceVersionSummary]
+    total: int = Field(default=0, ge=0)
+    has_more: bool = False
 
 
 class PlanningJob(BaseModel):
@@ -486,6 +520,21 @@ class TripWorkspace(BaseModel):
     updated_at: datetime
     request_brief: TripPlanningRequest
     manual_notes: str = ""
+    version_label: str = ""
+    is_starred: bool = False
+    is_archived: bool = False
+    version_origin_kind: Literal[
+        "created",
+        "updated",
+        "generated",
+        "snapshot",
+        "replanned",
+        "prechecked",
+        "restored",
+        "share_revoked",
+        "share_regenerated",
+    ] | None = None
+    restored_from_version: int | None = Field(default=None, ge=1)
     locked_day_numbers: list[int] = Field(default_factory=list)
     reservations: list[ReservationItem] = Field(default_factory=list)
     last_replan_summary: ReplanSummary | None = None
@@ -511,6 +560,28 @@ class TripWorkspacePatchRequest(BaseModel):
     reservations: list[ReservationItem] | None = None
     generate_response: bool = False
     include_debug: bool = False
+
+
+class TripWorkspaceVersion(BaseModel):
+    trip_id: str
+    version: int = Field(default=1, ge=1)
+    captured_at: datetime
+    is_current: bool = False
+    workspace: TripWorkspace
+
+
+class TripWorkspaceVersionLabelUpdateRequest(BaseModel):
+    version_label: str = ""
+
+
+class TripWorkspaceVersionCreateRequest(BaseModel):
+    version_label: str = ""
+
+
+class TripWorkspaceVersionMetaUpdateRequest(BaseModel):
+    version_label: str = ""
+    is_starred: bool = False
+    is_archived: bool = False
 
 
 class PrecheckRefreshRequest(BaseModel):

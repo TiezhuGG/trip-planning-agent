@@ -321,6 +321,28 @@ export function isPrecheckSummaryStale(workspace: TripWorkspace) {
   return updatedAt > precheckedAt;
 }
 
+export function shouldRefreshPrecheck(
+  workspace: TripWorkspace | null,
+  jobs: PlanningJobSummary[],
+) {
+  if (!workspace || workspace.status === "draft") {
+    return false;
+  }
+
+  if (hasRunningPrecheckJob(workspace.id, jobs)) {
+    return false;
+  }
+
+  if (!workspace.last_precheck_summary) {
+    return true;
+  }
+
+  return (
+    isPrecheckSummaryStale(workspace) ||
+    countPrecheckAttentionItems(workspace.last_precheck_summary) > 0
+  );
+}
+
 export function collectPrecheckAffectedDays(workspace: TripWorkspace) {
   const summary = workspace.last_precheck_summary;
   if (!summary) {
